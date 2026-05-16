@@ -6,6 +6,7 @@
 
 #include <fstream>
 #include <iostream>
+#include <chrono>
 
 namespace Valorant
 {
@@ -26,17 +27,48 @@ namespace Valorant
         //   * UE-standard signatures        (StaticFindObject, StaticLoadObject, FMemoryMalloc)
         //   * Valorant-only string anchors  (PlayFinisher, SetOutlineMode, GetSpread*)
         //   * vtable/xref pattern scans     (BoneMatrix, ToVector/AngleNormalize, GetFiringLocAndDir)
-        constexpr uint32_t kStaticFindObject     = 0;
-        constexpr uint32_t kStaticLoadObject     = 0;
-        constexpr uint32_t kFMemoryMalloc        = 0;
-        constexpr uint32_t kBoneMatrix           = 0;
-        constexpr uint32_t kSetOutlineMode       = 0;
-        constexpr uint32_t kPlayFinisher         = 0;
-        constexpr uint32_t kGetSpreadValues      = 0;
-        constexpr uint32_t kGetSpreadAngles      = 0;
-        constexpr uint32_t kToVectorNormalize    = 0;
-        constexpr uint32_t kToAngleNormalize     = 0;
-        constexpr uint32_t kGetFiringLocAndDir   = 0;
+        constexpr uint32_t kStaticFindObject     = 0x108DA10; // located: only fn with `aStaticfindfirs` data xref
+        constexpr uint32_t kStaticLoadObject     = 0;         // TODO: chase callers of StaticFindObject that hit FLinkerLoad
+        constexpr uint32_t kFMemoryMalloc        = 0;         // TODO: GMalloc vtable path (qword_A1CC130)
+        constexpr uint32_t kBoneMatrix           = 0;         // TODO: FName-pool-stripped strings; needs pattern scan
+        constexpr uint32_t kSetOutlineMode       = 0;         // TODO: FName-pool-stripped; resolve UFunction at runtime
+        constexpr uint32_t kPlayFinisher         = 0;         // TODO: FName-pool-stripped; resolve UFunction at runtime
+        constexpr uint32_t kGetSpreadValues      = 0;         // TODO: FName-pool-stripped; resolve UFunction at runtime
+        constexpr uint32_t kGetSpreadAngles      = 0;         // TODO: FName-pool-stripped; resolve UFunction at runtime
+        constexpr uint32_t kToVectorNormalize    = 0;         // TODO: leaf math helper, no string anchor
+        constexpr uint32_t kToAngleNormalize     = 0;         // TODO: leaf math helper, no string anchor
+        constexpr uint32_t kGetFiringLocAndDir   = 0;         // TODO: FName-pool-stripped; resolve UFunction at runtime
+    }
+
+    // FName mask cipher state lives in module .data alongside GObjects/leak-logger
+    // state structs. The decrypt routine is sub_9DAF50 with its own 7-case math
+    // (different from the GObjects accessor); the perception ESP currently uses
+    // the simpler per-byte XOR path instead, but we still emit the state/key
+    // RVAs so consumers that need the mask cipher have an anchor.
+    namespace FNameMaskOffsets
+    {
+        constexpr uint32_t kStateRVA = 0xA7C0A40; // 7-qword state, accessed by sub_9DAF50
+        constexpr uint32_t kKeyRVA   = 0xA7C0A78; // uint32 key at state+0x38
+    }
+
+    // Returns a UTC ISO-8601 timestamp string (e.g. "2026-05-16T12:34:56Z")
+    // using only <chrono> and standard C library — no platform-specific helpers.
+    static std::string GetUtcTimestamp()
+    {
+        const auto now      = std::chrono::system_clock::now();
+        const std::time_t t = std::chrono::system_clock::to_time_t(now);
+
+        std::tm utc{};
+#if defined(_WIN32)
+        gmtime_s(&utc, &t);
+#else
+        gmtime_r(&t, &utc);
+#endif
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%04d-%02d-%02dT%02d:%02d:%02dZ",
+            utc.tm_year + 1900, utc.tm_mon + 1, utc.tm_mday,
+            utc.tm_hour,        utc.tm_min,      utc.tm_sec);
+        return buf;
     }
 
     void WriteDecryptHeader(const fs::path& OutputFolder)
@@ -53,6 +85,9 @@ namespace Valorant
         out << "#pragma once\n\n";
         out << "#include <cstdint>\n\n";
 
+        // ------------------------------------------------------------------ //
+        // Header banner
+        // ------------------------------------------------------------------ //
         out << "/*\n";
         out << " * ValorantDecrypt.h\n";
         out << " *\n";
@@ -60,11 +95,13 @@ namespace Valorant
         out << " * RVA + decrypt routine a consumer (ESP, internal tool, etc.)\n";
         out << " * needs to use the SDK against the live game.\n";
         out << " *\n";
+        out << " * Generated at: " << GetUtcTimestamp() << "\n";
+        out << " *\n";
         out << " * Offset sources:\n";
         out << " *   - GObjects state/key:  hardcoded in Dumper-7-VGK Decryption.h\n";
         out << " *   - GWorld, FNamePool,   auto-discovered by upstream Dumper-7\n";
         out << " *     AppendString, PE     pattern scans\n";
-        out << " *   - FName decrypt + the  TODO — locate per patch, see source\n";
+        out << " *   - FName decrypt + the  TODO -- locate per patch, see source\n";
         out << " *     game function ptrs   for the planned scan strategies\n";
         out << " *\n";
         out << " * Build: " << Settings::Generator::GameVersion << "-"
@@ -74,57 +111,93 @@ namespace Valorant
         out << "namespace ValorantSDK\n";
         out << "{\n\n";
 
-        // ---------- Global pointers ----------
-        out << "/* --- Global Pointers (RVA from module base) --- */\n";
-        out << "constexpr uint32_t GWorld              = 0x" << std::hex
-            << Off::InSDK::World::GWorld << std::dec << ";  // 0 if Riot stripped the static slot\n";
-        out << "constexpr uint32_t FNamePool           = 0x" << std::hex
+        // ------------------------------------------------------------------ //
+        // Global Pointers
+        // ------------------------------------------------------------------ //
+        out << "// ============== Global Pointers ==============\n\n";
+
+        out << "/// RVA of UWorld* from the module base; 0 if Riot stripped the static slot.\n";
+        out << "constexpr uint32_t GWorld            = 0x" << std::hex
+            << Off::InSDK::World::GWorld << std::dec << ";\n";
+        out << "/// RVA of the FNamePool root pointer from the module base.\n";
+        out << "constexpr uint32_t FNamePool         = 0x" << std::hex
             << Off::InSDK::NameArray::GNames << std::dec << ";\n";
-        out << "constexpr uint32_t GObjectsState       = 0x" << std::hex
-            << Valorant::kGObjectsStateRVA << std::dec << ";  // 7 qwords\n";
-        out << "constexpr uint32_t GObjectsKey         = 0x" << std::hex
-            << Valorant::kGObjectsKeyRVA << std::dec << ";   // uint32\n";
-        out << "constexpr int32_t  ProcessEventIndex   = " << std::dec
+        out << "/// RVA of the 7-qword GObjects state array used by decrypt_gobjects().\n";
+        out << "constexpr uint32_t GObjectsState     = 0x" << std::hex
+            << Valorant::kGObjectsStateRVA << std::dec << ";\n";
+        out << "/// RVA of the uint32 GObjects key consumed by decrypt_gobjects().\n";
+        out << "constexpr uint32_t GObjectsKey       = 0x" << std::hex
+            << Valorant::kGObjectsKeyRVA << std::dec << ";\n";
+        out << "/// Vtable index of UObject::ProcessEvent (zero-based).\n";
+        out << "constexpr int32_t  ProcessEventIndex = " << std::dec
             << Off::InSDK::ProcessEvent::PEIndex << ";\n\n";
 
-        out << "// FName decrypt: this Valorant patch uses a simple per-byte XOR with a\n";
-        out << "// single 32-bit key recovered from the \"None\" entry's known plaintext.\n";
-        out << "// No static state/key RVA to embed — call recover_fname_key() below.\n";
-        out << "// (A future patch may reintroduce a 7-state mask cipher; if so, add the\n";
-        out << "// state/key RVAs here and port the case math to fname_decrypt_mask().)\n\n";
+        out << "// FName decrypt: this binary actually ships TWO ciphers.\n";
+        out << "//   1. A simple per-byte XOR with a 32-bit key recovered from the \"None\"\n";
+        out << "//      entry's known plaintext. This is what most consumers use; see\n";
+        out << "//      recover_fname_key() / fname_decrypt_bytes() below.\n";
+        out << "//   2. A 7-state mask cipher implemented at sub_9DAF50, operating on a\n";
+        out << "//      separate state struct. The RVAs are emitted below so consumers\n";
+        out << "//      that need the mask cipher have an anchor; port the case math\n";
+        out << "//      from sub_9DAF50 if you require it (the perception ESP doesn't).\n";
+        out << "/// RVA of the 7-qword FName mask cipher state array.\n";
+        out << "constexpr uint32_t FNameMaskState    = 0x" << std::hex
+            << FNameMaskOffsets::kStateRVA << std::dec << ";\n";
+        out << "/// RVA of the uint32 FName mask cipher key (= FNameMaskState + 0x38).\n";
+        out << "constexpr uint32_t FNameMaskKey      = 0x" << std::hex
+            << FNameMaskOffsets::kKeyRVA << std::dec << ";\n\n";
 
-        // ---------- Function pointers ----------
-        out << "/* --- Function Pointers (RVA from module base) --- */\n";
-        out << "constexpr uint32_t ProcessEvent        = 0x" << std::hex
+        // ------------------------------------------------------------------ //
+        // Function Pointers
+        // ------------------------------------------------------------------ //
+        out << "// ============== Function Pointers ==============\n\n";
+
+        out << "/// RVA of UObject::ProcessEvent from the module base.\n";
+        out << "constexpr uint32_t ProcessEvent      = 0x" << std::hex
             << Off::InSDK::ProcessEvent::PEOffset << std::dec << ";\n";
-        out << "constexpr uint32_t AppendString        = 0x" << std::hex
+        out << "/// RVA of FName::AppendString (AppendNameToString) from the module base.\n";
+        out << "constexpr uint32_t AppendString      = 0x" << std::hex
             << Off::InSDK::Name::AppendNameToString << std::dec << ";\n";
-        out << "constexpr uint32_t StaticFindObject    = 0x" << std::hex
-            << TodoOffsets::kStaticFindObject << std::dec << ";  // TODO\n";
-        out << "constexpr uint32_t StaticLoadObject    = 0x" << std::hex
-            << TodoOffsets::kStaticLoadObject << std::dec << ";  // TODO\n";
-        out << "constexpr uint32_t FMemoryMalloc       = 0x" << std::hex
-            << TodoOffsets::kFMemoryMalloc << std::dec << ";  // TODO\n";
-        out << "constexpr uint32_t BoneMatrix          = 0x" << std::hex
-            << TodoOffsets::kBoneMatrix << std::dec << ";  // TODO\n";
-        out << "constexpr uint32_t SetOutlineMode      = 0x" << std::hex
-            << TodoOffsets::kSetOutlineMode << std::dec << ";  // TODO\n";
-        out << "constexpr uint32_t PlayFinisher        = 0x" << std::hex
-            << TodoOffsets::kPlayFinisher << std::dec << ";  // TODO\n";
-        out << "constexpr uint32_t GetSpreadValues     = 0x" << std::hex
-            << TodoOffsets::kGetSpreadValues << std::dec << ";  // TODO\n";
-        out << "constexpr uint32_t GetSpreadAngles     = 0x" << std::hex
-            << TodoOffsets::kGetSpreadAngles << std::dec << ";  // TODO\n";
-        out << "constexpr uint32_t ToVectorNormalize   = 0x" << std::hex
-            << TodoOffsets::kToVectorNormalize << std::dec << ";  // TODO\n";
-        out << "constexpr uint32_t ToAngleNormalize    = 0x" << std::hex
-            << TodoOffsets::kToAngleNormalize << std::dec << ";  // TODO\n";
-        out << "constexpr uint32_t GetFiringLocAndDir  = 0x" << std::hex
-            << TodoOffsets::kGetFiringLocAndDir << std::dec << ";  // TODO\n\n";
+        out << "/// RVA of StaticFindObject -- TODO: locate via UE-standard signature scan.\n";
+        out << "constexpr uint32_t StaticFindObject  = 0x" << std::hex
+            << TodoOffsets::kStaticFindObject << std::dec << ";\n";
+        out << "/// RVA of StaticLoadObject -- TODO: locate via UE-standard signature scan.\n";
+        out << "constexpr uint32_t StaticLoadObject  = 0x" << std::hex
+            << TodoOffsets::kStaticLoadObject << std::dec << ";\n";
+        out << "/// RVA of FMemory::Malloc -- TODO: locate via UE-standard signature scan.\n";
+        out << "constexpr uint32_t FMemoryMalloc     = 0x" << std::hex
+            << TodoOffsets::kFMemoryMalloc << std::dec << ";\n";
+        out << "/// RVA of bone-matrix getter -- TODO: locate via vtable/xref pattern scan.\n";
+        out << "constexpr uint32_t BoneMatrix        = 0x" << std::hex
+            << TodoOffsets::kBoneMatrix << std::dec << ";\n";
+        out << "/// RVA of SetOutlineMode -- TODO: locate via Valorant string anchor.\n";
+        out << "constexpr uint32_t SetOutlineMode    = 0x" << std::hex
+            << TodoOffsets::kSetOutlineMode << std::dec << ";\n";
+        out << "/// RVA of PlayFinisher -- TODO: locate via Valorant string anchor.\n";
+        out << "constexpr uint32_t PlayFinisher      = 0x" << std::hex
+            << TodoOffsets::kPlayFinisher << std::dec << ";\n";
+        out << "/// RVA of GetSpreadValues -- TODO: locate via GetSpread* string anchor.\n";
+        out << "constexpr uint32_t GetSpreadValues   = 0x" << std::hex
+            << TodoOffsets::kGetSpreadValues << std::dec << ";\n";
+        out << "/// RVA of GetSpreadAngles -- TODO: locate via GetSpread* string anchor.\n";
+        out << "constexpr uint32_t GetSpreadAngles   = 0x" << std::hex
+            << TodoOffsets::kGetSpreadAngles << std::dec << ";\n";
+        out << "/// RVA of ToVector/AngleNormalize -- TODO: locate via vtable/xref scan.\n";
+        out << "constexpr uint32_t ToVectorNormalize = 0x" << std::hex
+            << TodoOffsets::kToVectorNormalize << std::dec << ";\n";
+        out << "/// RVA of ToAngle/AngleNormalize variant -- TODO: locate via vtable/xref scan.\n";
+        out << "constexpr uint32_t ToAngleNormalize  = 0x" << std::hex
+            << TodoOffsets::kToAngleNormalize << std::dec << ";\n";
+        out << "/// RVA of GetFiringLocAndDir -- TODO: locate via vtable/xref pattern scan.\n";
+        out << "constexpr uint32_t GetFiringLocAndDir = 0x" << std::hex
+            << TodoOffsets::kGetFiringLocAndDir << std::dec << ";\n\n";
 
-        // ---------- GObjects decrypt body ----------
-        out << "/* --- GObjects Decrypt (ported from sub_EA1980) --- */\n\n";
+        // ------------------------------------------------------------------ //
+        // GObjects Decrypt
+        // ------------------------------------------------------------------ //
+        out << "// ============== GObjects Decrypt ==============\n\n";
 
+        out << "/// Rotate-left 64-bit helper used by decrypt_gobjects().\n";
         out << "__forceinline uint64_t rol64(uint64_t v, uint32_t n)\n";
         out << "{\n";
         out << "    n &= 63;\n";
@@ -132,6 +205,7 @@ namespace Valorant
         out << "    return (v << n) | (v >> (64 - n));\n";
         out << "}\n\n";
 
+        out << "/// Rotate-right 64-bit helper used by decrypt_gobjects().\n";
         out << "__forceinline uint64_t ror64(uint64_t v, uint32_t n)\n";
         out << "{\n";
         out << "    n &= 63;\n";
@@ -139,13 +213,19 @@ namespace Valorant
         out << "    return (v >> n) | (v << (64 - n));\n";
         out << "}\n\n";
 
+        out << "/// Bit-reversal stage 1: swap adjacent bits via 0xAAAA... mask.\n";
         out << "__forceinline uint64_t stage1(uint64_t v) { return (v >> 1) ^ (((v >> 1) ^ (v << 1)) & 0xAAAAAAAAAAAAAAAAULL); }\n";
+        out << "/// Bit-reversal stage 2: swap 2-bit groups via 0xCCCC... mask.\n";
         out << "__forceinline uint64_t stage2(uint64_t v) { return (v >> 2) ^ (((v >> 2) ^ (v << 2)) & 0xCCCCCCCCCCCCCCCCULL); }\n";
+        out << "/// Bit-reversal stage 3: swap nibbles via 0xF0F0... mask.\n";
         out << "__forceinline uint64_t stage3(uint64_t v) { return (v >> 4) ^ (((v >> 4) ^ (v << 4)) & 0xF0F0F0F0F0F0F0F0ULL); }\n";
+        out << "/// Bit-reversal stage 4: swap bytes via 0xFF00... mask.\n";
         out << "__forceinline uint64_t stage4(uint64_t v) { return (v >> 8) ^ (((v >> 8) ^ (v << 8)) & 0xFF00FF00FF00FF00ULL); }\n";
+        out << "/// Full 64-bit bit-reversal: pipeline of stages 1-4 followed by ror32.\n";
         out << "__forceinline uint64_t bitrev64(uint64_t v) { return ror64(stage4(stage3(stage2(stage1(v)))), 32); }\n\n";
 
-        out << "// Reads state[7] + key from the live module and returns the FUObjectArray base.\n";
+        out << "/// Reads GObjectsState[7] + GObjectsKey from the live module and returns\n";
+        out << "/// the decrypted FUObjectArray base pointer (ported from sub_EA1980).\n";
         out << "__forceinline uint64_t decrypt_gobjects(uintptr_t module_base)\n";
         out << "{\n";
         out << "    constexpr uint64_t kMagic = 0x2545F4914F6CDD1DULL;\n";
@@ -171,30 +251,32 @@ namespace Valorant
         out << "    return v ^ static_cast<uint64_t>(key);\n";
         out << "}\n\n";
 
-        // ---------- FName decrypt body ----------
-        out << "/* --- FName Per-Byte XOR Decrypt --- */\n\n";
+        // ------------------------------------------------------------------ //
+        // FName Decrypt
+        // ------------------------------------------------------------------ //
+        out << "// ============== FName Decrypt ==============\n\n";
 
-        out << "// 'None' XOR-mask: 'N'^'o'^'n'^'e' bytes pre-shifted by the encoder's\n";
-        out << "// length/position step. XOR'ing the encrypted first-entry name dword\n";
-        out << "// against this constant recovers the FName key.\n";
+        out << "/// Known-plaintext XOR mask derived from the encoded \"None\" entry.\n";
+        out << "/// XOR'ing the encrypted first-entry name dword against this recovers\n";
+        out << "/// the per-patch FName key ('N'^'o'^'n'^'e' bytes + encoder length step).\n";
         out << "constexpr uint32_t kFNameNoneMask = 0x616A6B4A;\n\n";
 
-        out << "// Recover the FName XOR key from FNamePool's first entry (\"None\").\n";
-        out << "// fname_pool_base is the value at *(module_base + FNamePool).\n";
+        out << "/// Recover the FName XOR key from FNamePool's first entry (\"None\").\n";
+        out << "/// fname_pool_base is the value at *(module_base + FNamePool).\n";
         out << "__forceinline uint32_t recover_fname_key(uintptr_t fname_pool_base)\n";
         out << "{\n";
         out << "    const uintptr_t chunk0 = *reinterpret_cast<uintptr_t*>(fname_pool_base + 0x10);\n";
         out << "    if (!chunk0) return 0;\n";
-        out << "    // First entry is \"None\" — its 4 encrypted name bytes start at +6 from\n";
+        out << "    // First entry is \"None\" -- its 4 encrypted name bytes start at +6 from\n";
         out << "    // the entry base; XOR with kFNameNoneMask gives the key.\n";
         out << "    const uintptr_t entry  = chunk0 + 12;  // header at +0..+5\n";
         out << "    const uint32_t  enc4   = *reinterpret_cast<uint32_t*>(entry + 6);\n";
         out << "    return enc4 ^ kFNameNoneMask;\n";
         out << "}\n\n";
 
-        out << "// Decrypt an FName entry's bytes in place using a key recovered from\n";
-        out << "// recover_fname_key(). buf must hold `len` bytes copied from\n";
-        out << "// entry_address + 6 (after the 6-byte FName entry header).\n";
+        out << "/// Decrypt an FName entry's bytes in-place. key must come from\n";
+        out << "/// recover_fname_key(). buf must hold `len` bytes copied from\n";
+        out << "/// (entry_address + 6), i.e. past the 6-byte FName entry header.\n";
         out << "__forceinline void fname_decrypt_bytes(uint8_t* buf, uint16_t len, uint32_t key)\n";
         out << "{\n";
         out << "    for (uint16_t i = 0; i < len; ++i)\n";
@@ -203,6 +285,85 @@ namespace Valorant
         out << "        buf[i] ^= static_cast<uint8_t>(len) ^ k;\n";
         out << "    }\n";
         out << "}\n\n";
+
+        // ------------------------------------------------------------------ //
+        // UE Stable Offsets
+        // ------------------------------------------------------------------ //
+        out << "// ============== UE Stable Offsets ==============\n\n";
+        out << "/// UE class member offsets verified against Engine_classes.hpp from the\n";
+        out << "/// 12.09 SDK dump. These are UE-source-level constants and do not change\n";
+        out << "/// between Valorant patches unless Epic restructures the class layout.\n";
+        out << "namespace UEOffsets\n";
+        out << "{\n\n";
+
+        out << "    /// Offset of UGameViewportClient* GameViewport within UEngine (0x0BD0).\n";
+        out << "    constexpr uint32_t UEngine_GameViewport                  = 0x0BD0;\n";
+        out << "    /// Offset of UWorld* World within UGameViewportClient (0x0080).\n";
+        out << "    constexpr uint32_t UGameViewportClient_World             = 0x0080;\n";
+        out << "    /// Offset of UGameInstance* GameInstance within UGameViewportClient.\n";
+        out << "    /// (UEngine itself has no direct GameInstance member; this is the path.)\n";
+        out << "    constexpr uint32_t UGameViewportClient_GameInstance      = 0x0088;\n";
+        out << "    /// Offset of TArray<ULocalPlayer*> LocalPlayers within UGameInstance (0x0040).\n";
+        out << "    constexpr uint32_t UGameInstance_LocalPlayers        = 0x0040;\n";
+        out << "    /// Offset of APlayerController* PlayerController within ULocalPlayer (0x0038).\n";
+        out << "    constexpr uint32_t ULocalPlayer_PlayerController     = 0x0038;\n";
+        out << "    /// Offset of APawn* AcknowledgedPawn within APlayerController (0x0518).\n";
+        out << "    constexpr uint32_t APlayerController_AcknowledgedPawn    = 0x0518;\n";
+        out << "    /// Offset of APlayerCameraManager* PlayerCameraManager within APlayerController (0x0528).\n";
+        out << "    constexpr uint32_t APlayerController_PlayerCameraManager = 0x0528;\n";
+        out << "    /// Offset of FCameraCacheEntry CameraCachePrivate within APlayerCameraManager (0x17B0).\n";
+        out << "    constexpr uint32_t APlayerCameraManager_CameraCachePrivate = 0x17B0;\n";
+        out << "    /// Offset of ULevel* PersistentLevel within UWorld (0x0038).\n";
+        out << "    constexpr uint32_t UWorld_PersistentLevel            = 0x0038;\n";
+        out << "    /// Offset of TArray<ULevel*> Levels within UWorld (0x0190).\n";
+        out << "    constexpr uint32_t UWorld_Levels                     = 0x0190;\n";
+        out << "    /// Offset of UGameInstance* OwningGameInstance within UWorld (0x01D8).\n";
+        out << "    constexpr uint32_t UWorld_OwningGameInstance         = 0x01D8;\n";
+        out << "    /// Offset of TArray<AActor*> Actors within ULevel (0x00A0).\n";
+        out << "    constexpr uint32_t ULevel_Actors                     = 0x00A0;\n";
+        out << "    /// Offset of UWorld* OwningWorld within ULevel (0x00C0).\n";
+        out << "    constexpr uint32_t ULevel_OwningWorld                = 0x00C0;\n";
+        out << "    /// Offset of UClass* ClassPrivate (the UObject's class pointer) at 0x0010.\n";
+        out << "    constexpr uint32_t UObject_ClassPrivate              = 0x0010;\n";
+        out << "    /// Offset of FName NamePrivate (the UObject's name) at 0x0018.\n";
+        out << "    constexpr uint32_t UObject_NamePrivate               = 0x0018;\n";
+        out << "    /// Offset of UStruct* SuperStruct (parent class chain) within UStruct at 0x0048.\n";
+        out << "    constexpr uint32_t UStruct_SuperStruct               = 0x0048;\n\n";
+
+        out << "} // namespace UEOffsets\n\n";
+
+        // ------------------------------------------------------------------ //
+        // Usage example
+        // ------------------------------------------------------------------ //
+        out << "/*\n";
+        out << " * Usage example -- combining decrypt_gobjects(), UWorld traversal,\n";
+        out << " * and FName resolution. Pseudocode; does not need to compile as-is.\n";
+        out << " *\n";
+        out << " *   uintptr_t base = GetModuleBase(\"VALORANT-Win64-Shipping.exe\");\n";
+        out << " *\n";
+        out << " *   // 1. Decrypt GObjects and walk all UObjects.\n";
+        out << " *   uint64_t gobjects_base = decrypt_gobjects(base);\n";
+        out << " *   // gobjects_base is now a valid FUObjectArray*.\n";
+        out << " *\n";
+        out << " *   // 2. Reach UWorld via UEngine.\n";
+        out << " *   uintptr_t engine   = ReadPtr(base + GWorld);  // or via GEngine if present\n";
+        out << " *   uintptr_t viewport = ReadPtr(engine + UEOffsets::UEngine_GameViewport);\n";
+        out << " *   uintptr_t world    = ReadPtr(viewport + UEOffsets::UGameViewportClient_World);\n";
+        out << " *\n";
+        out << " *   // 3. Walk actors in the persistent level.\n";
+        out << " *   uintptr_t level      = ReadPtr(world + UEOffsets::UWorld_PersistentLevel);\n";
+        out << " *   uintptr_t actors_data = ReadPtr(level + UEOffsets::ULevel_Actors);  // TArray.Data\n";
+        out << " *   int32_t   actors_num  = ReadI32(level + UEOffsets::ULevel_Actors + 8);\n";
+        out << " *   for (int32_t i = 0; i < actors_num; ++i) {\n";
+        out << " *       uintptr_t actor = ReadPtr(actors_data + i * 8);\n";
+        out << " *       if (!actor) continue;\n";
+        out << " *\n";
+        out << " *       // 4. Resolve FName for this actor.\n";
+        out << " *       uint32_t fname_key = recover_fname_key(ReadPtr(base + FNamePool));\n";
+        out << " *       uint32_t name_idx  = ReadU32(actor + UEOffsets::UObject_NamePrivate);\n";
+        out << " *       // look up name_idx in FNamePool, then call fname_decrypt_bytes().\n";
+        out << " *   }\n";
+        out << " */\n\n";
 
         out << "} // namespace ValorantSDK\n";
         out.close();
