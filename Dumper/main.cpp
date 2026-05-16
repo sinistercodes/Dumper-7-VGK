@@ -11,6 +11,7 @@
 #include "Generators/Generator.h"
 
 #include "Valorant/Output.h"
+#include "Valorant/FunctionLocator.h"
 
 enum class EFortToastType : uint8
 {
@@ -37,6 +38,8 @@ DWORD MainThread(HMODULE Module)
 
 	Generator::InitEngineCore();
 	Generator::InitInternal();
+
+	Valorant::LocateGameFunctions();
 
 	if (Settings::Generator::GameName.empty() && Settings::Generator::GameVersion.empty())
 	{

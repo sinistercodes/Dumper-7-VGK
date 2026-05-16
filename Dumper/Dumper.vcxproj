@@ -298,6 +298,7 @@
     <ClCompile Include="Engine\Private\Unreal\NameArray.cpp" />
     <ClCompile Include="Engine\Private\Unreal\ObjectArray.cpp" />
     <ClCompile Include="Engine\Private\Valorant\Decryption.cpp" />
+    <ClCompile Include="Engine\Private\Valorant\FunctionLocator.cpp" />
     <ClCompile Include="Engine\Private\Valorant\Output.cpp" />
     <ClCompile Include="Engine\Private\OffsetFinder\Offsets.cpp" />
     <ClCompile Include="Engine\Private\Unreal\UnrealObjects.cpp" />
@@ -346,6 +347,7 @@
     <ClInclude Include="Generator\Public\Managers\CollisionManager.h" />
     <ClInclude Include="Engine\Public\Unreal\ObjectArray.h" />
     <ClInclude Include="Engine\Public\Valorant\Decryption.h" />
+    <ClInclude Include="Engine\Public\Valorant\FunctionLocator.h" />
     <ClInclude Include="Engine\Public\Valorant\Output.h" />
     <ClInclude Include="Engine\Public\OffsetFinder\OffsetFinder.h" />
     <ClInclude Include="Engine\Public\OffsetFinder\Offsets.h" />
