@@ -48,7 +48,29 @@ Output: `out\build\bin\Release\Dumper-7.dll`.
 
 ## Usage
 
-Inject `Dumper-7.dll` into a running `VALORANT-Win64-Shipping.exe`. A console attaches and prints:
+### Launching without Vanguard
+
+Vanguard's kernel driver blocks DLL injection into a running `VALORANT-Win64-Shipping.exe`. To run the dumper, start the game with Vanguard stopped:
+
+1. Open an **elevated** terminal and stop the Vanguard service:
+
+   ```
+   sc stop vgk
+   ```
+
+2. Launch the game directly, bypassing the Riot Client:
+
+   ```
+   "D:\Riot Games\VALORANT\live\VALORANT.exe" -remoting-app-port=58088 -remoting-auth-token=lalalalala -patchline=live -subject=lalalala -ares-deployment=eu -config-endpoint=https://shared.eu.a.pvp.net -savetouserdir -culture=en_US -riotgamesapi-settings-token=dafuq
+   ```
+
+   The token args are placeholders — the game will fail to authenticate against Riot's services but engine init still runs, GObjects is populated, and the SDK can be generated. Adjust `-ares-deployment` / `-config-endpoint` for your region if needed.
+
+3. Manual-map `Dumper-7.dll` from an **elevated** injector (FaceInjector, Extreme Injector, SystemInformer's loaded-modules pane, etc.). Standard `LoadLibrary` will be flagged.
+
+### Console output
+
+A console attaches and prints:
 
 ```
 [Valorant] Resolving GObjects via encrypted-globals decrypt...
@@ -56,7 +78,7 @@ Inject `Dumper-7.dll` into a running `VALORANT-Win64-Shipping.exe`. A console at
 [Valorant] FUObjectArray OK: num=... max=... chunks=...
 ```
 
-If those lines appear, GObjects is resolved and the rest of Dumper-7 takes over. Default SDK output path is `C:\Dumper-7\<version>-ShooterGame\`.
+If those lines appear, GObjects is resolved and the rest of Dumper-7 takes over. Default SDK output path is `C:\Dumper-7\<version>-ShooterGame\`. Press `F6` in the console to unload.
 
 The line `GWorld WAS NOT FOUND!!!` is **expected** — Riot strips the static GWorld slot. The generated SDK falls back to `UEngine::GetEngine() -> GameViewport -> World` at consume time, which is correct.
 
