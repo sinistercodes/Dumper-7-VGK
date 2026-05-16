@@ -1,0 +1,28 @@
+name: Build
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  build:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure CMake
+        run: cmake -S . -B out/build -G "Visual Studio 17 2022" -A x64
+
+      - name: Build Release
+        run: cmake --build out/build --config Release
+
+      - name: Upload Dumper-7.dll
+        uses: actions/upload-artifact@v4
+        with:
+          name: Dumper-7-VGK-${{ github.sha }}
+          path: out/build/bin/Release/Dumper-7.dll
+          if-no-files-found: error
