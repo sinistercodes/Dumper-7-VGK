@@ -1,115 +1,78 @@
+# Dumper-7-VGK
 
-# Dumper-7
+[Dumper-7](https://github.com/Encryqed/Dumper-7) fork that handles Valorant's encrypted-globals scheme. The standard Dumper-7 cannot locate `GObjects` in Valorant because Riot strips the static FUObjectArray pointer and resolves it through a runtime decrypt. This fork ports that decrypt so the SDK generator works against `VALORANT-Win64-Shipping.exe` without manual offset overrides.
 
-SDK Generator for all Unreal Engine games. Supported versions are all of UE4 and UE5.
+## What's added
 
-## How to use
+| File | Purpose |
+|---|---|
+| `Dumper/Engine/Public/Valorant/Decryption.h` | RVAs, declarations, full algorithm doc |
+| `Dumper/Engine/Private/Valorant/Decryption.cpp` | Case 0..6 decrypt math + `FindGObjects()` + `Init()` |
+| `Dumper/Engine/Public/Unreal/ObjectArray.h` | New `InitFromAbsolute(uint8_t*, layout)` overload |
+| `Dumper/Engine/Private/Unreal/ObjectArray.cpp` | `InitFromAbsolute` implementation |
+| `Dumper/Generator/Private/Generators/Generator.cpp` | Calls `Valorant::Init()` in `InitEngineCore()` |
 
-- Compile the dll in x64-Release
-- Inject the dll into your target game
-- The SDK is generated into the path specified by `Settings::SDKGenerationPath`, by default this is `C:\\Dumper-7`
-- **See [UsingTheSDK](UsingTheSDK.md) for a guide to get started, or to migrate from an old SDK.**
-## Support Me
+The decrypt was extracted statically from `sub_EA1980` and cross-verified against `sub_3638AC0` (two inline copies of the same GObjects accessor). Both functions use the magic constant `0x2545F4914F6CDD1D` and a 7-case state-machine selected by `(MAGIC * mixedKey) % 7`.
 
-KoFi: https://ko-fi.com/fischsalat \
-Patreon: https://www.patreon.com/u119629245
+## Patch maintenance
 
-LTC (LTC-network): `LLtXWxDbc5H9d96VJF36ZpwVX6DkYGpTJU` \
-BTC (Bitcoin): `1DVDUMcotWzEG1tyd1FffyrYeu4YEh7spx` \
-USDT (Tron (TRC20)): `TWHDoUr2H52Gb2WYdZe7z1Ct316gMg64ps`
+GObjects state and key live in module `.data` at fixed RVAs for each Valorant build. The current values:
 
-## Overriding Offsets
-
-- ### Only override any offsets if the generator doesn't find them, or if they are incorrect
-- All overrides are made in **Generator::InitEngineCore()** inside of **Generator.cpp**
-
-- GObjects (see [GObjects-Layout](#overriding-gobjects-layout) too)
-  ```cpp
-  ObjectArray::Init(/*GObjectsOffset*/, /*ChunkSize*/, /*bIsChunked*/);
-  ```
-  ```cpp
-  /* Make sure only to use types which exist in the sdk (eg. uint8, uint64) */
-  InitObjectArrayDecryption([](void* ObjPtr) -> uint8* { return reinterpret_cast<uint8*>(uint64(ObjPtr) ^ 0x8375); });
-  ```
-- FName::AppendString
-  - Forcing GNames:
-    ```cpp
-    FName::Init(/*bForceGNames*/); // Useful if the AppendString offset is wrong
-    ```
-  - Overriding the offset:
-    ```cpp
-    FName::Init(/*OverrideOffset, OverrideType=[AppendString, ToString, GNames], bIsNamePool*/);
-    ```
-- ProcessEvent
-  ```cpp
-  Off::InSDK::InitPE(/*PEIndex*/);
-  ```
-## Overriding GObjects-Layout
-- Only add a new layout if GObjects isn't automatically found for your game.
-- Layout overrides are at roughly line 30 of `ObjectArray.cpp`
-- For UE4.11 to UE4.20 add the layout to `FFixedUObjectArrayLayouts`
-- For UE4.21 and higher add the layout to `FChunkedFixedUObjectArrayLayouts`
-- **Examples:**
-  ```cpp
-  FFixedUObjectArrayLayout // Default UE4.11 - UE4.20
-  {
-      .ObjectsOffset = 0x0,
-      .MaxObjectsOffset = 0x8,
-      .NumObjectsOffset = 0xC
-  }
-  ```
-  ```cpp
-  FChunkedFixedUObjectArrayLayout // Default UE4.21 and above
-  {
-      .ObjectsOffset = 0x00,
-      .MaxElementsOffset = 0x10,
-      .NumElementsOffset = 0x14,
-      .MaxChunksOffset = 0x18,
-      .NumChunksOffset = 0x1C,
-  }
-  ```
-
-## Config File
-You can optionally dynamically change settings through a `Dumper-7.ini` file, instead of modifying `Settings.h`.
-- **Per-game**: Create `Dumper-7.ini` in the same directory as the game's exe file.
-- **Global**: Create `Dumper-7.ini` under `C:\Dumper-7`.
-- Profiles do not merge. In other words your global profile does not change the default settings.
-  
-- **SleepTimeout:**
-  - If non-zero dump will start after a delay
-  - Values under 1000 assumed to be in seconds, otherwise in milliseconds
-  - If both SleepTimeout and DumpKey are set whichever occurs first will trigger the dump
-- **DumpKey:** 
-  - If non-zero dump will start upon key press
-  - Value should be a hex or decimal integer corresponding to a [virtual keycode](https://learn.microsoft.com/en-us/windows/win32/inputdev/virtual-key-codes).
-  - Hex integers should start with 0x.
-- **SDKNamespaceName:**
-  - Changes the namespace in the generated files.
-- **SDKGenerationPath:**
-  - Generate output at the specified path instead of `C:/Dumper-7`.
-  - Paths are relative to game executable unless you use an absolute path including drive letter.
-  - Use `..` to access parent directories. Do not include quotes.
-
-
-### Example:
-```ini
-[Settings]
-SleepTimeout=30
-SDKNamespaceName=MyOwnSDKNamespace
-DumpKey=0x77
-SDKGenerationPath=./
+```cpp
+// Decryption.h
+inline constexpr uint32_t kGObjectsStateRVA = 0xA62E600;  // 7 qwords
+inline constexpr uint32_t kGObjectsKeyRVA   = 0xA62E638;  // uint32
 ```
-- These settings would generate the SDK in the same folder as the game and would start after 30 seconds or upon pressing F8.
 
-## Issues
+When Valorant patches and the dumper logs `Decrypted pointer is unreadable`, re-extract the RVAs from the new binary in IDA:
 
-If you have any issues using the Dumper, please create an Issue on this repository\
-and explain the problem **in detail**.
+- **Strategy 1** — search the magic constant `0x2545F4914F6CDD1D`. Each hit is inside an encrypted-globals accessor; find the nearby `lea` that names the state struct.
+- **Strategy 2** — find the `"CloseDisregardForGC"` string xref; the function that uses it calls the GObjects accessor directly.
 
-- Should your game be crashing while dumping, attach Visual Studios' debugger to the game and inject the Dumper-7.dll in debug-configuration.
-Then include screenshots of the exception causing the crash, a screenshot of the callstack, as well as the console output.
+Both strategies are described in the source. The case math is patch-stable; only the RVAs change.
 
-- Should there be any compiler-errors in the SDK please send screenshots of them. Please note that **only build errors** are considered errors, as Intellisense often reports false positives.
-Make sure to always send screenshots of the code causing the first error, as it's likely to cause a chain-reaction of errors.
+## Build
 
-- Should your own dll-project crash, verify your code thoroughly to make sure the error actually lies within the generated SDK.
+### Visual Studio (`.sln`)
+
+Open `Dumper-7.sln` in VS 2022, set configuration to **Release | x64**, then **Build → Build Solution**. Output: `x64\Release\Dumper-7.dll`.
+
+### CMake
+
+```
+cmake -S . -B out/build -G "Visual Studio 17 2022" -A x64
+cmake --build out/build --config Release
+```
+
+Output: `out\build\bin\Release\Dumper-7.dll`.
+
+## Usage
+
+Inject `Dumper-7.dll` into a running `VALORANT-Win64-Shipping.exe`. A console attaches and prints:
+
+```
+[Valorant] Resolving GObjects via encrypted-globals decrypt...
+[Valorant] GObjects: key=0x... case=N decrypted=0x...
+[Valorant] FUObjectArray OK: num=... max=... chunks=...
+```
+
+If those lines appear, GObjects is resolved and the rest of Dumper-7 takes over. Default SDK output path is `C:\Dumper-7\<version>-ShooterGame\`.
+
+The line `GWorld WAS NOT FOUND!!!` is **expected** — Riot strips the static GWorld slot. The generated SDK falls back to `UEngine::GetEngine() -> GameViewport -> World` at consume time, which is correct.
+
+## Pulling upstream Dumper-7
+
+Upstream is set as the `upstream` remote:
+
+```
+git fetch upstream
+git merge upstream/main           # keeps the Valorant commits on top
+git push origin master
+```
+
+If upstream conflicts touch `ObjectArray.cpp`/`Generator.cpp`, resolve in favor of the Valorant integration (the InitFromAbsolute overload and the `Valorant::Init()` call site).
+
+## Credits
+
+- Original SDK generator: [Encryqed/Dumper-7](https://github.com/Encryqed/Dumper-7)
+- Valorant decrypt RE/integration: this fork
