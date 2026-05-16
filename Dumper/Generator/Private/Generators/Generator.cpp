@@ -57,7 +57,13 @@ void Generator::InitEngineCore()
 
 	CALL_PLATFORM_SPECIFIC_FUNCTION(Off::InSDK::ProcessEvent::InitPE); // Must be at this position, relies on offsets initialized in Off::Init()
 
-	Off::InSDK::World::InitGWorld(); // Must be at this position, relies on offsets initialized in Off::Init()
+	// Valorant strips the static GWorld slot — sub_3A63280 initializes the
+	// dword at base+0xA7C0700 to 0 and nothing else ever writes there.
+	// Calling Off::InSDK::World::InitGWorld() would unconditionally print the
+	// scary "GWorld WAS NOT FOUND!!!" warning. Skip it; consumers reach the
+	// active world via UEngine -> GameViewport -> World (the SDK's
+	// UWorld::GetWorld() falls back to that chain when Offsets::GWorld == 0).
+	Off::InSDK::World::GWorld = 0x0;
 
 	Off::InSDK::Text::InitTextOffsets(); // Must be at this position, relies on offsets initialized in Off::InitPE()
 
