@@ -40,11 +40,23 @@ namespace Valorant
                 return 0;
             }
 
-            const uintptr_t ModuleBase = Platform::GetModuleBase();
-            const uintptr_t FuncAddr   = reinterpret_cast<uintptr_t>(ExecPtr);
-            const uint32_t  RVA        = static_cast<uint32_t>(FuncAddr - ModuleBase);
+            // FindObjectFast returns the first short-name match, which can hit
+            // an unrelated UFunction in a different class. Verify the resolved
+            // ExecFunction lands inside a loaded module — if it doesn't, the
+            // result is poison and worse than 0 (consumers would call random
+            // memory). Log the full UE path so name collisions are visible.
+            const uintptr_t FuncAddr = reinterpret_cast<uintptr_t>(ExecPtr);
+            if (!Platform::IsAddressInAnyModule(FuncAddr))
+            {
+                std::cerr << "[Valorant] UFunction " << PrimaryName
+                          << " ExecFunction 0x" << std::hex << FuncAddr << std::dec
+                          << " is outside any loaded module -- treating as not found\n";
+                return 0;
+            }
 
-            std::cerr << "[Valorant] UFunction " << PrimaryName << " @ RVA 0x" << std::hex << RVA << std::dec << "\n";
+            const uint32_t RVA = static_cast<uint32_t>(FuncAddr - Platform::GetModuleBase());
+            std::cerr << "[Valorant] UFunction " << Func.GetFullName()
+                      << " @ RVA 0x" << std::hex << RVA << std::dec << "\n";
             return RVA;
         }
     }

@@ -104,10 +104,10 @@ namespace Valorant
             << Off::InSDK::NameArray::GNames << std::dec << ";\n";
         out << "/// RVA of the 7-qword GObjects state array used by decrypt_gobjects().\n";
         out << "constexpr uint32_t GObjectsState     = 0x" << std::hex
-            << Valorant::kGObjectsStateRVA << std::dec << ";\n";
+            << Valorant::gObjectsStateRVA << std::dec << ";\n";
         out << "/// RVA of the uint32 GObjects key consumed by decrypt_gobjects().\n";
         out << "constexpr uint32_t GObjectsKey       = 0x" << std::hex
-            << Valorant::kGObjectsKeyRVA << std::dec << ";\n";
+            << Valorant::gObjectsKeyRVA << std::dec << ";\n";
         out << "/// Vtable index of UObject::ProcessEvent (zero-based).\n";
         out << "constexpr int32_t  ProcessEventIndex = " << std::dec
             << Off::InSDK::ProcessEvent::PEIndex << ";\n\n";
@@ -292,7 +292,7 @@ namespace Valorant
         out << "    switch (idx)\n";
         out << "    {\n";
         out << "    case 0: v = ~(v + static_cast<uint64_t>(static_cast<uint32_t>(hi - 1))); break;\n";
-        out << "    case 1: v = stage1(v ^ ~static_cast<uint64_t>(static_cast<uint32_t>(hi + 2 * idx))); break;\n";
+        out << "    case 1: v = stage1(v ^ static_cast<uint64_t>(~static_cast<uint32_t>(hi + 2 * idx))); break;\n";
         out << "    case 2: v = ~stage1(v); break;\n";
         out << "    case 3: v = stage1(v + static_cast<uint64_t>(static_cast<uint32_t>(hi + 2 * idx))); break;\n";
         out << "    case 4: v = bitrev64(stage1(v)); break;\n";
@@ -431,9 +431,9 @@ namespace Valorant
         as << "    const uint64 FNamePool         = 0x" << std::hex
            << Off::InSDK::NameArray::GNames << std::dec << ";\n";
         as << "    const uint64 GObjectsState     = 0x" << std::hex
-           << Valorant::kGObjectsStateRVA << std::dec << ";\n";
+           << Valorant::gObjectsStateRVA << std::dec << ";\n";
         as << "    const uint64 GObjectsKey       = 0x" << std::hex
-           << Valorant::kGObjectsKeyRVA << std::dec << ";\n";
+           << Valorant::gObjectsKeyRVA << std::dec << ";\n";
         as << "    const uint64 FNameMaskState    = 0x" << std::hex
            << Valorant::kFNameMaskStateRVA << std::dec << ";\n";
         as << "    const uint64 FNameMaskKey      = 0x" << std::hex
@@ -520,7 +520,7 @@ namespace Valorant
         as << "        uint32 idx  = uint32(hash % 7);\n";
         as << "        uint64 v    = state[idx];\n\n";
         as << "        if      (idx == 0) { v = ~(v + uint64(uint32(hi - 1))); }\n";
-        as << "        else if (idx == 1) { v = stage1(v ^ ~uint64(uint32(hi + 2*idx))); }\n";
+        as << "        else if (idx == 1) { v = stage1(v ^ uint64(~uint32(hi + 2*idx))); }\n";
         as << "        else if (idx == 2) { v = ~stage1(v); }\n";
         as << "        else if (idx == 3) { v = stage1(v + uint64(uint32(hi + 2*idx))); }\n";
         as << "        else if (idx == 4) { v = bitrev64(stage1(v)); }\n";

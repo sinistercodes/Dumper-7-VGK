@@ -16,7 +16,7 @@
 // the same MAGIC constant (0x2545F4914F6CDD1D) but specialises the per-case
 // math to a particular target global. The GObjects accessor we reverse-engineered
 // lives at sub_EA1980 / sub_3638AC0 (two inline copies that share the same
-// cases). Its cases (selected by `(LOW32(MAGIC*mixedKey) % 7)`) are:
+// cases). Its cases (selected by `(MAGIC * mixedKey) % 7` -- full 64-bit) are:
 //
 //   0: v ^= hi32
 //   1: v = uint32(hi+idx) + ROL(state, ((hi+2*idx) % 63) + 1)

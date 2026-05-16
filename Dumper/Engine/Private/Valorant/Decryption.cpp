@@ -117,7 +117,9 @@ namespace Valorant
             break;
         case 1:
         {
-            const uint64_t mask = ~static_cast<uint64_t>(static_cast<uint32_t>(hi + 2 * idx));
+            // NOT is applied at uint32 width then zero-extended -- the
+            // decompile shows ~uint32(hi+2*idx), not ~uint64(...).
+            const uint64_t mask = static_cast<uint64_t>(~static_cast<uint32_t>(hi + 2 * idx));
             v = Stage1(v ^ mask);
             break;
         }
