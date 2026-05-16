@@ -19,12 +19,13 @@ namespace Valorant
     //   * vtable/xref pattern scans     (BoneMatrix, ToVector/AngleNormalize, GetFiringLocAndDir)
     namespace TodoOffsets
     {
-        // FName 7-state decrypt — different state struct + per-case math than
-        // GObjects. The state lives in module .data; both still need locating.
-        constexpr uint32_t kFNameDecryptStateRVA = 0;
-        constexpr uint32_t kFNameDecryptKeyRVA   = 0;
-
-        // Game / engine function pointers (RVA from module base).
+        // Game / engine function pointers (RVA from module base). Filled by
+        // per-patch signature scans next to Valorant::FindGObjects.
+        //
+        // The reference dumper auto-discovers these via:
+        //   * UE-standard signatures        (StaticFindObject, StaticLoadObject, FMemoryMalloc)
+        //   * Valorant-only string anchors  (PlayFinisher, SetOutlineMode, GetSpread*)
+        //   * vtable/xref pattern scans     (BoneMatrix, ToVector/AngleNormalize, GetFiringLocAndDir)
         constexpr uint32_t kStaticFindObject     = 0;
         constexpr uint32_t kStaticLoadObject     = 0;
         constexpr uint32_t kFMemoryMalloc        = 0;
@@ -83,12 +84,14 @@ namespace Valorant
             << Valorant::kGObjectsStateRVA << std::dec << ";  // 7 qwords\n";
         out << "constexpr uint32_t GObjectsKey         = 0x" << std::hex
             << Valorant::kGObjectsKeyRVA << std::dec << ";   // uint32\n";
-        out << "constexpr uint32_t FNameDecryptState   = 0x" << std::hex
-            << TodoOffsets::kFNameDecryptStateRVA << std::dec << ";  // TODO: locate FName decrypt state\n";
-        out << "constexpr uint32_t FNameDecryptKey     = 0x" << std::hex
-            << TodoOffsets::kFNameDecryptKeyRVA << std::dec << ";  // TODO: locate FName decrypt key\n";
         out << "constexpr int32_t  ProcessEventIndex   = " << std::dec
             << Off::InSDK::ProcessEvent::PEIndex << ";\n\n";
+
+        out << "// FName decrypt: this Valorant patch uses a simple per-byte XOR with a\n";
+        out << "// single 32-bit key recovered from the \"None\" entry's known plaintext.\n";
+        out << "// No static state/key RVA to embed — call recover_fname_key() below.\n";
+        out << "// (A future patch may reintroduce a 7-state mask cipher; if so, add the\n";
+        out << "// state/key RVAs here and port the case math to fname_decrypt_mask().)\n\n";
 
         // ---------- Function pointers ----------
         out << "/* --- Function Pointers (RVA from module base) --- */\n";
@@ -168,12 +171,38 @@ namespace Valorant
         out << "    return v ^ static_cast<uint64_t>(key);\n";
         out << "}\n\n";
 
-        // ---------- FName decrypt placeholder ----------
-        out << "/* --- FName XOR Decrypt Implementation --- */\n";
-        out << "// TODO: port the 7-case FName mask decrypt once the function is located\n";
-        out << "//       in IDA (search for a second xref site that uses the magic constant\n";
-        out << "//       0x2545F4914F6CDD1D and operates on FName state/key rather than\n";
-        out << "//       GObjects state/key). The case math differs from GObjects.\n\n";
+        // ---------- FName decrypt body ----------
+        out << "/* --- FName Per-Byte XOR Decrypt --- */\n\n";
+
+        out << "// 'None' XOR-mask: 'N'^'o'^'n'^'e' bytes pre-shifted by the encoder's\n";
+        out << "// length/position step. XOR'ing the encrypted first-entry name dword\n";
+        out << "// against this constant recovers the FName key.\n";
+        out << "constexpr uint32_t kFNameNoneMask = 0x616A6B4A;\n\n";
+
+        out << "// Recover the FName XOR key from FNamePool's first entry (\"None\").\n";
+        out << "// fname_pool_base is the value at *(module_base + FNamePool).\n";
+        out << "__forceinline uint32_t recover_fname_key(uintptr_t fname_pool_base)\n";
+        out << "{\n";
+        out << "    const uintptr_t chunk0 = *reinterpret_cast<uintptr_t*>(fname_pool_base + 0x10);\n";
+        out << "    if (!chunk0) return 0;\n";
+        out << "    // First entry is \"None\" — its 4 encrypted name bytes start at +6 from\n";
+        out << "    // the entry base; XOR with kFNameNoneMask gives the key.\n";
+        out << "    const uintptr_t entry  = chunk0 + 12;  // header at +0..+5\n";
+        out << "    const uint32_t  enc4   = *reinterpret_cast<uint32_t*>(entry + 6);\n";
+        out << "    return enc4 ^ kFNameNoneMask;\n";
+        out << "}\n\n";
+
+        out << "// Decrypt an FName entry's bytes in place using a key recovered from\n";
+        out << "// recover_fname_key(). buf must hold `len` bytes copied from\n";
+        out << "// entry_address + 6 (after the 6-byte FName entry header).\n";
+        out << "__forceinline void fname_decrypt_bytes(uint8_t* buf, uint16_t len, uint32_t key)\n";
+        out << "{\n";
+        out << "    for (uint16_t i = 0; i < len; ++i)\n";
+        out << "    {\n";
+        out << "        const uint8_t k = static_cast<uint8_t>((key >> ((i & 3) * 8)) & 0xFF);\n";
+        out << "        buf[i] ^= static_cast<uint8_t>(len) ^ k;\n";
+        out << "    }\n";
+        out << "}\n\n";
 
         out << "} // namespace ValorantSDK\n";
         out.close();
