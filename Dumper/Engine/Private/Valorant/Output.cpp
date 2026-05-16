@@ -19,37 +19,16 @@ namespace Valorant
     //   * UE-standard signatures        (StaticFindObject, StaticLoadObject, FMemoryMalloc)
     //   * Valorant-only string anchors  (PlayFinisher, SetOutlineMode, GetSpread*)
     //   * vtable/xref pattern scans     (BoneMatrix, ToVector/AngleNormalize, GetFiringLocAndDir)
+    // Non-UFunction-backed offsets we still need per-patch signature scans for.
+    // The 7 UFunction-reflected game functions (SetOutlineMode, PlayFinisher,
+    // GetSpread*, GetFiringLocAndDir, ToVector/AngleNormalize) live in
+    // Valorant::GameFunctions and are populated by LocateGameFunctions().
     namespace TodoOffsets
     {
-        // Game / engine function pointers (RVA from module base). Filled by
-        // per-patch signature scans next to Valorant::FindGObjects.
-        //
-        // The reference dumper auto-discovers these via:
-        //   * UE-standard signatures        (StaticFindObject, StaticLoadObject, FMemoryMalloc)
-        //   * Valorant-only string anchors  (PlayFinisher, SetOutlineMode, GetSpread*)
-        //   * vtable/xref pattern scans     (BoneMatrix, ToVector/AngleNormalize, GetFiringLocAndDir)
-        constexpr uint32_t kStaticFindObject     = 0x108DA10; // located: only fn with `aStaticfindfirs` data xref
-        constexpr uint32_t kStaticLoadObject     = 0;         // TODO: chase callers of StaticFindObject that hit FLinkerLoad
-        constexpr uint32_t kFMemoryMalloc        = 0;         // TODO: GMalloc vtable path (qword_A1CC130)
-        constexpr uint32_t kBoneMatrix           = 0;         // TODO: FName-pool-stripped strings; needs pattern scan
-        constexpr uint32_t kSetOutlineMode       = 0;         // TODO: FName-pool-stripped; resolve UFunction at runtime
-        constexpr uint32_t kPlayFinisher         = 0;         // TODO: FName-pool-stripped; resolve UFunction at runtime
-        constexpr uint32_t kGetSpreadValues      = 0;         // TODO: FName-pool-stripped; resolve UFunction at runtime
-        constexpr uint32_t kGetSpreadAngles      = 0;         // TODO: FName-pool-stripped; resolve UFunction at runtime
-        constexpr uint32_t kToVectorNormalize    = 0;         // TODO: leaf math helper, no string anchor
-        constexpr uint32_t kToAngleNormalize     = 0;         // TODO: leaf math helper, no string anchor
-        constexpr uint32_t kGetFiringLocAndDir   = 0;         // TODO: FName-pool-stripped; resolve UFunction at runtime
-    }
-
-    // FName mask cipher state lives in module .data alongside GObjects/leak-logger
-    // state structs. The decrypt routine is sub_9DAF50 with its own 7-case math
-    // (different from the GObjects accessor); the perception ESP currently uses
-    // the simpler per-byte XOR path instead, but we still emit the state/key
-    // RVAs so consumers that need the mask cipher have an anchor.
-    namespace FNameMaskOffsets
-    {
-        constexpr uint32_t kStateRVA = 0xA7C0A40; // 7-qword state, accessed by sub_9DAF50
-        constexpr uint32_t kKeyRVA   = 0xA7C0A78; // uint32 key at state+0x38
+        constexpr uint32_t kStaticFindObject = 0x108DA10; // located: only fn with `aStaticfindfirs` data xref
+        constexpr uint32_t kStaticLoadObject = 0;         // TODO: chase callers of StaticFindObject that hit FLinkerLoad
+        constexpr uint32_t kFMemoryMalloc    = 0;         // TODO: GMalloc vtable path (qword_A1CC130)
+        constexpr uint32_t kBoneMatrix       = 0;         // TODO: USkinnedMeshComponent native member, no UFunction
     }
 
     // Returns a UTC ISO-8601 timestamp string (e.g. "2026-05-16T12:34:56Z")
@@ -143,10 +122,10 @@ namespace Valorant
         out << "//      from sub_9DAF50 if you require it (the perception ESP doesn't).\n";
         out << "/// RVA of the 7-qword FName mask cipher state array.\n";
         out << "constexpr uint32_t FNameMaskState    = 0x" << std::hex
-            << FNameMaskOffsets::kStateRVA << std::dec << ";\n";
+            << Valorant::kFNameMaskStateRVA << std::dec << ";\n";
         out << "/// RVA of the uint32 FName mask cipher key (= FNameMaskState + 0x38).\n";
         out << "constexpr uint32_t FNameMaskKey      = 0x" << std::hex
-            << FNameMaskOffsets::kKeyRVA << std::dec << ";\n\n";
+            << Valorant::kFNameMaskKeyRVA << std::dec << ";\n\n";
 
         // ------------------------------------------------------------------ //
         // Function Pointers
@@ -456,9 +435,9 @@ namespace Valorant
         as << "    const uint64 GObjectsKey       = 0x" << std::hex
            << Valorant::kGObjectsKeyRVA << std::dec << ";\n";
         as << "    const uint64 FNameMaskState    = 0x" << std::hex
-           << FNameMaskOffsets::kStateRVA << std::dec << ";\n";
+           << Valorant::kFNameMaskStateRVA << std::dec << ";\n";
         as << "    const uint64 FNameMaskKey      = 0x" << std::hex
-           << FNameMaskOffsets::kKeyRVA << std::dec << ";\n";
+           << Valorant::kFNameMaskKeyRVA << std::dec << ";\n";
         as << "    const int    ProcessEventIndex = "   << std::dec
            << Off::InSDK::ProcessEvent::PEIndex << ";\n\n";
 
