@@ -13,8 +13,11 @@ namespace Valorant
     {
         // Resolve a UFunction by primary name, falling back to an alternate name.
         // Returns 0 if neither is found. Logs result to stderr either way.
-        uint32_t ResolveUFunction(const char* PrimaryName, const char* AltName)
+        // OutFullName is set to the resolved UE full path on success, empty on failure.
+        uint32_t ResolveUFunction(const char* PrimaryName, const char* AltName, std::string& OutFullName)
         {
+            OutFullName.clear();
+
             UEFunction Func = ObjectArray::FindObjectFast<UEFunction>(PrimaryName, EClassCastFlags::Function);
 
             if (!Func)
@@ -24,7 +27,6 @@ namespace Valorant
 
                 if (!Func)
                 {
-                    const char* Tried = AltName ? AltName : PrimaryName;
                     std::cerr << "[Valorant] UFunction " << PrimaryName;
                     if (AltName)
                         std::cerr << " / " << AltName;
@@ -55,7 +57,8 @@ namespace Valorant
             }
 
             const uint32_t RVA = static_cast<uint32_t>(FuncAddr - Platform::GetModuleBase());
-            std::cerr << "[Valorant] UFunction " << Func.GetFullName()
+            OutFullName = Func.GetFullName();
+            std::cerr << "[Valorant] UFunction " << OutFullName
                       << " @ RVA 0x" << std::hex << RVA << std::dec << "\n";
             return RVA;
         }
@@ -63,12 +66,12 @@ namespace Valorant
 
     void LocateGameFunctions()
     {
-        GameFunctions::SetOutlineMode     = ResolveUFunction("SetOutlineMode",          "GetAresOutlineMode");
-        GameFunctions::PlayFinisher       = ResolveUFunction("PlayFinisher",            "OnFinisherTriggered");
-        GameFunctions::GetSpreadValues    = ResolveUFunction("GetSpreadValues",         nullptr);
-        GameFunctions::GetSpreadAngles    = ResolveUFunction("GetSpreadAngles",         nullptr);
-        GameFunctions::GetFiringLocAndDir = ResolveUFunction("GetFiringLocAndDir",      "GetFiringLocationAndDirection");
-        GameFunctions::ToVectorNormalize  = ResolveUFunction("ToVectorNormalize",       nullptr);
-        GameFunctions::ToAngleNormalize   = ResolveUFunction("ToAngleNormalize",        nullptr);
+        GameFunctions::SetOutlineMode     = ResolveUFunction("SetOutlineMode",          "GetAresOutlineMode",            GameFunctions::SetOutlineModeFullName);
+        GameFunctions::PlayFinisher       = ResolveUFunction("PlayFinisher",            "OnFinisherTriggered",           GameFunctions::PlayFinisherFullName);
+        GameFunctions::GetSpreadValues    = ResolveUFunction("GetSpreadValues",         nullptr,                         GameFunctions::GetSpreadValuesFullName);
+        GameFunctions::GetSpreadAngles    = ResolveUFunction("GetSpreadAngles",         nullptr,                         GameFunctions::GetSpreadAnglesFullName);
+        GameFunctions::GetFiringLocAndDir = ResolveUFunction("GetFiringLocAndDir",      "GetFiringLocationAndDirection", GameFunctions::GetFiringLocAndDirFullName);
+        GameFunctions::ToVectorNormalize  = ResolveUFunction("ToVectorNormalize",       nullptr,                         GameFunctions::ToVectorNormalizeFullName);
+        GameFunctions::ToAngleNormalize   = ResolveUFunction("ToAngleNormalize",        nullptr,                         GameFunctions::ToAngleNormalizeFullName);
     }
 }
