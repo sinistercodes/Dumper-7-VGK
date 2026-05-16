@@ -233,9 +233,10 @@ namespace Valorant
     // -----------------------------------------------------------------------
     // Check 3: ProcessEvent vtable index sanity
     //
-    // Off::InSDK::ProcessEvent::PEOffset is the absolute address (not RVA) of
-    // the ProcessEvent function as set by InitPE(). Verify it's inside a module.
-    // Log a warning (but don't fail) if the index differs from 0x53 (= 83).
+    // Off::InSDK::ProcessEvent::PEOffset is an RVA from module base (set by
+    // InitPE() via Platform::GetOffset). Add the module base to get the
+    // absolute address before validating. Log a warning (but don't fail) if
+    // the index differs from 0x53 (= 83).
     // -----------------------------------------------------------------------
     static bool CheckProcessEvent()
     {
@@ -248,7 +249,7 @@ namespace Valorant
             return false;
         }
 
-        const uintptr_t peAddr = static_cast<uintptr_t>(peOffset);
+        const uintptr_t peAddr = Platform::GetModuleBase() + static_cast<uintptr_t>(peOffset);
         if (!Platform::IsAddressInAnyModule(peAddr))
         {
             std::cerr << "[Valorant][validate] ProcessEvent FAILED: PEOffset 0x"
@@ -274,7 +275,8 @@ namespace Valorant
     // -----------------------------------------------------------------------
     // Check 4: AppendString sanity
     //
-    // Off::InSDK::Name::AppendNameToString should point inside the module.
+    // Off::InSDK::Name::AppendNameToString is an RVA from module base. Add
+    // the module base to get the absolute address before validating.
     // -----------------------------------------------------------------------
     static bool CheckAppendString()
     {
@@ -286,7 +288,7 @@ namespace Valorant
             return false;
         }
 
-        const uintptr_t asAddr = static_cast<uintptr_t>(asOffset);
+        const uintptr_t asAddr = Platform::GetModuleBase() + static_cast<uintptr_t>(asOffset);
         if (!Platform::IsAddressInAnyModule(asAddr))
         {
             std::cerr << "[Valorant][validate] AppendString FAILED: AppendNameToString 0x"

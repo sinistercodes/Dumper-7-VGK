@@ -518,11 +518,23 @@ namespace Valorant
     {
         // Check env var to enable strict-drift mode for CI pipelines.
         // Set VALORANT_STRICT_DRIFT=1 in the environment before launching.
+        // Use _dupenv_s on MSVC to avoid the deprecated-getenv C4996 warning.
+#if defined(_MSC_VER)
+        {
+            char*  buf = nullptr;
+            size_t len = 0;
+            if (_dupenv_s(&buf, &len, "VALORANT_STRICT_DRIFT") == 0 && buf != nullptr)
+            {
+                if (buf[0] == '1') bStrictDrift = true;
+                free(buf);
+            }
+        }
+#else
         if (const char* env = std::getenv("VALORANT_STRICT_DRIFT"))
         {
-            if (env[0] == '1')
-                bStrictDrift = true;
+            if (env[0] == '1') bStrictDrift = true;
         }
+#endif
 
         std::cerr << "[Valorant] Resolving GObjects via encrypted-globals decrypt...\n";
         uint8_t* gobjects = FindGObjects();

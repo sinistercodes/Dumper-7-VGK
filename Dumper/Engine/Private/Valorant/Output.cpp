@@ -5,7 +5,7 @@
 #include "OffsetFinder/Offsets.h"
 #include "Settings.h"
 
-#include "json.hpp"
+#include "Json/json.hpp"
 
 #include <fstream>
 #include <iostream>
@@ -166,14 +166,26 @@ namespace Valorant
         out << "//      separate state struct. The RVAs are emitted below so consumers\n";
         out << "//      that need the mask cipher have an anchor; port the case math\n";
         out << "//      from sub_9DAF50 if your consumer actually needs the mask path.\n";
+        const bool fnameMaskDrift =
+            Valorant::fNameMaskStateRVA != Valorant::kFNameMaskStateRVA ||
+            Valorant::fNameMaskKeyRVA   != Valorant::kFNameMaskKeyRVA;
+        const char* fnameMaskSource = fnameMaskDrift ? "sigscan" : "hardcoded";
         out << "/// RVA of the 7-qword FName mask cipher state array.\n";
-        EmitSourceLine(out, "hardcoded");
+        if (fnameMaskDrift)
+            out << "/// source=sigscan  fallback=0x" << std::hex << Valorant::kFNameMaskStateRVA
+                << std::dec << "  DRIFT (bump Decryption.h fallback)\n";
+        else
+            EmitSourceLine(out, fnameMaskSource);
         out << "constexpr uint32_t FNameMaskState    = 0x" << std::hex
-            << Valorant::kFNameMaskStateRVA << std::dec << ";\n";
+            << Valorant::fNameMaskStateRVA << std::dec << ";\n";
         out << "/// RVA of the uint32 FName mask cipher key (= FNameMaskState + 0x38).\n";
-        EmitSourceLine(out, "hardcoded");
+        if (fnameMaskDrift)
+            out << "/// source=sigscan  fallback=0x" << std::hex << Valorant::kFNameMaskKeyRVA
+                << std::dec << "  DRIFT (bump Decryption.h fallback)\n";
+        else
+            EmitSourceLine(out, fnameMaskSource);
         out << "constexpr uint32_t FNameMaskKey      = 0x" << std::hex
-            << Valorant::kFNameMaskKeyRVA << std::dec << ";\n\n";
+            << Valorant::fNameMaskKeyRVA << std::dec << ";\n\n";
 
         // ------------------------------------------------------------------ //
         // Function Pointers
@@ -584,10 +596,10 @@ namespace Valorant
                 HexRva(Valorant::kGObjectsKeyRVA),
                 gObjectsKeyDrift);
             gp["FNameMaskState"] = MakeGlobalPtr(
-                HexRva(Valorant::kFNameMaskStateRVA),
+                HexRva(Valorant::fNameMaskStateRVA),
                 "hardcoded", "medium");
             gp["FNameMaskKey"] = MakeGlobalPtr(
-                HexRva(Valorant::kFNameMaskKeyRVA),
+                HexRva(Valorant::fNameMaskKeyRVA),
                 "hardcoded", "medium");
 
             json peIdx;

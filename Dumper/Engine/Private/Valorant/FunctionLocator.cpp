@@ -48,7 +48,18 @@ namespace Valorant
             // result is poison and worse than 0 (consumers would call random
             // memory). Log the full UE path so name collisions are visible.
             const uintptr_t FuncAddr = reinterpret_cast<uintptr_t>(ExecPtr);
-            if (!Platform::IsAddressInAnyModule(FuncAddr))
+            // Validate the ExecFunction lands inside the GAME module specifically,
+            // not just any loaded DLL. Otherwise an unrelated module's address
+            // would pass IsAddressInAnyModule but produce a poison "RVA" once we
+            // subtract the game module base. A loose +0x10000000 (256 MB) bound
+            // on the resulting RVA rejects addresses in other modules without
+            // needing the (Platform-unexposed) game module size.
+            const uintptr_t ModuleBase = Platform::GetModuleBase();
+            const bool inGameModule =
+                FuncAddr >= ModuleBase &&
+                (FuncAddr - ModuleBase) < 0x10000000ULL &&
+                Platform::IsAddressInAnyModule(FuncAddr);
+            if (!inGameModule)
             {
                 std::cerr << "[Valorant] UFunction " << PrimaryName
                           << " ExecFunction 0x" << std::hex << FuncAddr << std::dec
@@ -56,7 +67,7 @@ namespace Valorant
                 return 0;
             }
 
-            const uint32_t RVA = static_cast<uint32_t>(FuncAddr - Platform::GetModuleBase());
+            const uint32_t RVA = static_cast<uint32_t>(FuncAddr - ModuleBase);
             OutFullName = Func.GetFullName();
             std::cerr << "[Valorant] UFunction " << OutFullName
                       << " @ RVA 0x" << std::hex << RVA << std::dec << "\n";
