@@ -53,9 +53,12 @@ namespace Valorant
               { kTestState[0], kTestState[1], kTestState[2], kTestState[3], kTestState[4], kTestState[5], kTestState[6] },
               0xFEDCBA98D908E7D3ULL, 0x01234566DA4EF82DULL },
             // case 1: v = uint32(hi+idx) + ROL(state, ((hi+2*idx)%63)+1)
+            // FNameMask expected re-captured after the width-of-NOT fix in
+            // commit 77ecadf -- pre-fix value was 0xF02138A95F38E936ULL, which
+            // differed in the upper 32 bits because ~ ran at uint64 width.
             { 1, 0x00000003U,
               { kTestState[0], kTestState[1], kTestState[2], kTestState[3], kTestState[4], kTestState[5], kTestState[6] },
-              0x21FDB976089B1344ULL, 0xF02138A95F38E936ULL },
+              0x21FDB976089B1344ULL, 0x0FDEC7565F38E936ULL },
             // case 2: v = ~state - uint32(hi+idx)
             { 2, 0x00000005U,
               { kTestState[0], kTestState[1], kTestState[2], kTestState[3], kTestState[4], kTestState[5], kTestState[6] },
