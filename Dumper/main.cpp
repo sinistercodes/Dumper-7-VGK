@@ -12,6 +12,8 @@
 
 #include "Valorant/Output.h"
 #include "Valorant/FunctionLocator.h"
+#include "Valorant/DecryptionTests.h"
+#include "Valorant/Validator.h"
 
 enum class EFortToastType : uint8
 {
@@ -29,6 +31,8 @@ DWORD MainThread(HMODULE Module)
 	freopen_s(&Dummy, "CONIN$", "r", stdin);
 
 	std::cerr << "Initializing [Dumper-7]\n";
+
+	Valorant::RunDecryptSelfTests();
 
 	Settings::Config::Load();
 	Settings::Config::DelayDumperStart();
@@ -68,7 +72,15 @@ DWORD MainThread(HMODULE Module)
 	Generator::Generate<DumpspaceGenerator>();
 
 	// Emit Valorant-specific runtime helper header alongside the SDK.
-	Valorant::WriteDecryptHeader(Generator::GetDumperFolder());
+	// Refuse to write a broken header: validate live binary state first.
+	if (Valorant::ValidateForEmit())
+	{
+		Valorant::WriteDecryptHeader(Generator::GetDumperFolder());
+	}
+	else
+	{
+		std::cerr << "[Valorant] VALIDATION FAILED — refusing to emit ValorantDecrypt.h\n";
+	}
 
 	auto DumpFinishTime = std::chrono::high_resolution_clock::now();
 
