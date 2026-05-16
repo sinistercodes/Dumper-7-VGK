@@ -11,6 +11,8 @@
 #include "Platform.h"
 #include "Json/json.hpp"
 
+#include "Valorant/Decryption.h"
+
 #include <fstream>
 
 inline void InitSettings()
@@ -42,7 +44,11 @@ void Generator::InitEngineCore()
 	/* Multiversus [Unsupported, weird GObjects-struct] */
 	//InitObjectArrayDecryption([](void* ObjPtr) -> uint8* { return reinterpret_cast<uint8*>(uint64(ObjPtr) ^ 0x1B5DEAFD6B4068C); });
 
-	ObjectArray::Init();
+	// Valorant: GObjects is reached through an encrypted-globals decrypt rather
+	// than a static module offset. Valorant::Init() reads state+key, runs the
+	// per-case math (ported from sub_EA1980), and hands the absolute address
+	// to ObjectArray. Replaces the default scan-based ObjectArray::Init().
+	Valorant::Init();
 
 	CALL_PLATFORM_SPECIFIC_FUNCTION(FName::Init);
 

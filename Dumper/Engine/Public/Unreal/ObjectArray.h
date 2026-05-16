@@ -44,6 +44,12 @@ public:
 	static void Init(int32 GObjectsOffset, const FFixedUObjectArrayLayout& ObjectArrayLayout = FFixedUObjectArrayLayout(), const char* const ModuleName = Settings::General::DefaultModuleName);
 	static void Init(int32 GObjectsOffset, int32 ElementsPerChunk, const FChunkedFixedUObjectArrayLayout& ObjectArrayLayout = FChunkedFixedUObjectArrayLayout(), const char* const ModuleName = Settings::General::DefaultModuleName);
 
+	// Initialize from a runtime-resolved FUObjectArray pointer (e.g. when
+	// the address is encrypted in the binary and only known after decrypt).
+	// ElementsPerChunk is read from the header (MaxElements / MaxChunks).
+	// Chunked layout is assumed — Valorant uses FChunkedFixedUObjectArray.
+	static void InitFromAbsolute(uint8_t* GObjectsAddress, const FChunkedFixedUObjectArrayLayout& ObjectArrayLayout = FChunkedFixedUObjectArrayLayout());
+
 	static void DumpObjects(const fs::path& Path, bool bWithPathname = false);
 	static void DumpObjectsWithProperties(const fs::path& Path, bool bWithPathname = false);
 

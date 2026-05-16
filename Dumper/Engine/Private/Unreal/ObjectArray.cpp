@@ -390,6 +390,46 @@ void ObjectArray::Init(int32 GObjectsOffset, int32 ElementsPerChunk, const FChun
 	ObjectArray::InitializeFUObjectItem(*reinterpret_cast<uint8_t**>(ChunksPtr));
 }
 
+void ObjectArray::InitFromAbsolute(uint8_t* GObjectsAddress, const FChunkedFixedUObjectArrayLayout& ObjectArrayLayout)
+{
+	// Address is absolute (e.g. decrypted from an encrypted-globals state) —
+	// skip the scan path entirely and configure ObjectArray directly.
+	GObjects = GObjectsAddress;
+
+	Off::FUObjectArray::bIsChunked = true;
+	Off::FUObjectArray::ChunkedFixedLayout = ObjectArrayLayout.IsValid() ? ObjectArrayLayout : FChunkedFixedUObjectArrayLayouts[0];
+
+	// GObjects is heap-allocated for this game — no static module offset to
+	// embed in the generated SDK. Consumers must re-resolve at runtime.
+	Off::InSDK::ObjArray::GObjects = 0;
+
+	// Pull ElementsPerChunk from the live header (Max / MaxChunks).
+	NumElementsPerChunk = static_cast<uint32>(Max()) / static_cast<uint32>(MaxChunks());
+	Off::InSDK::ObjArray::ChunkSize = NumElementsPerChunk;
+
+	ByIndex = [](void* ObjectsArray, int32 Index, uint32 FUObjectItemSize, uint32 FUObjectItemOffset, uint32 PerChunk) -> void*
+	{
+		if (Index < 0 || Index > Num())
+			return nullptr;
+
+		const int32 ChunkIndex = Index / PerChunk;
+		const int32 InChunkIdx = Index % PerChunk;
+
+		uint8_t* Chunk = (*reinterpret_cast<uint8_t***>(ObjectsArray))[ChunkIndex];
+		uint8_t* ItemPtr = reinterpret_cast<uint8_t*>(Chunk) + (InChunkIdx * FUObjectItemSize);
+
+		return *reinterpret_cast<void**>(ItemPtr + FUObjectItemOffset);
+	};
+
+	uint8_t* ChunksPtr = DecryptPtr(*reinterpret_cast<uint8_t**>(GObjects + Off::FUObjectArray::GetObjectsOffset()));
+
+	std::cerr << "ObjectArray::InitFromAbsolute: GObjects=0x" << std::hex
+	          << static_cast<void*>(GObjects)
+	          << " ElementsPerChunk=0x" << NumElementsPerChunk << std::dec << "\n" << std::endl;
+
+	ObjectArray::InitializeFUObjectItem(*reinterpret_cast<uint8_t**>(ChunksPtr));
+}
+
 void ObjectArray::DumpObjects(const fs::path& Path, bool bWithPathname)
 {
 	std::ofstream DumpStream(Path / "GObjects-Dump.txt");
