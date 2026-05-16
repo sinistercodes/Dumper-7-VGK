@@ -21,4 +21,8 @@ namespace Valorant
     // Writes <OutputFolder>/ValorantDecrypt.h. OutputFolder is the per-dump
     // directory (e.g. the same folder CppGenerator writes SDK.hpp into).
     void WriteDecryptHeader(const fs::path& OutputFolder);
+
+    // Writes <OutputFolder>/ValorantOffsets.json. Called automatically by
+    // WriteDecryptHeader after the header is emitted.
+    void WriteOffsetsJson(const fs::path& OutputFolder);
 }

@@ -5,9 +5,13 @@
 #include "OffsetFinder/Offsets.h"
 #include "Settings.h"
 
+#include "json.hpp"
+
 #include <fstream>
 #include <iostream>
 #include <chrono>
+#include <iomanip>
+#include <sstream>
 
 namespace Valorant
 {
@@ -23,6 +27,9 @@ namespace Valorant
     // The 7 UFunction-reflected game functions (SetOutlineMode, PlayFinisher,
     // GetSpread*, GetFiringLocAndDir, ToVector/AngleNormalize) live in
     // Valorant::GameFunctions and are populated by LocateGameFunctions().
+    // Forward declaration — defined later in this translation unit.
+    void WriteOffsetsJson(const fs::path& OutputFolder);
+
     namespace TodoOffsets
     {
         constexpr uint32_t kStaticFindObject = 0x108DA10; // located: only fn with `aStaticfindfirs` data xref
@@ -51,6 +58,36 @@ namespace Valorant
         return buf;
     }
 
+    // Helper: format a hex RVA as "0xABCDEF" string.
+    static std::string HexRva(uint32_t rva)
+    {
+        std::ostringstream ss;
+        ss << "0x" << std::hex << rva;
+        return ss.str();
+    }
+
+    // Emit the /// source= metadata line for a constant, including optional
+    // full_name (reflection) and drift warning (sigscan). Writes to `out`.
+    static void EmitSourceLine(std::ostream& out,
+                               const char*        source,
+                               const std::string& fullName  = {},
+                               bool               drift     = false,
+                               uint32_t           fallback  = 0,
+                               const char*        triedAlt  = nullptr)
+    {
+        out << "/// source=" << source;
+        if (!fullName.empty())
+            out << "  full_name=\"" << fullName << "\"";
+        if (triedAlt)
+            out << "  tried=[\"" << triedAlt << "\"]";
+        if (drift)
+        {
+            out << "  fallback=" << HexRva(fallback)
+                << "  DRIFT (bump Decryption.h fallback)";
+        }
+        out << "\n";
+    }
+
     void WriteDecryptHeader(const fs::path& OutputFolder)
     {
         const fs::path target = OutputFolder / "ValorantDecrypt.h";
@@ -61,6 +98,10 @@ namespace Valorant
             std::cerr << "[Valorant] Failed to open " << target << " for write.\n";
             return;
         }
+
+        // Pre-compute drift flags for GObjects sigscan entries.
+        const bool gObjectsStateDrift = (Valorant::gObjectsStateRVA != Valorant::kGObjectsStateRVA);
+        const bool gObjectsKeyDrift   = (Valorant::gObjectsKeyRVA   != Valorant::kGObjectsKeyRVA);
 
         out << "#pragma once\n\n";
         out << "#include <cstdint>\n\n";
@@ -97,18 +138,23 @@ namespace Valorant
         out << "// ============== Global Pointers ==============\n\n";
 
         out << "/// RVA of UWorld* from the module base; 0 if Riot stripped the static slot.\n";
+        EmitSourceLine(out, "stripped");
         out << "constexpr uint32_t GWorld            = 0x" << std::hex
             << Off::InSDK::World::GWorld << std::dec << ";\n";
         out << "/// RVA of the FNamePool root pointer from the module base.\n";
+        EmitSourceLine(out, "upstream");
         out << "constexpr uint32_t FNamePool         = 0x" << std::hex
             << Off::InSDK::NameArray::GNames << std::dec << ";\n";
         out << "/// RVA of the 7-qword GObjects state array used by decrypt_gobjects().\n";
+        EmitSourceLine(out, "sigscan", {}, gObjectsStateDrift, Valorant::kGObjectsStateRVA);
         out << "constexpr uint32_t GObjectsState     = 0x" << std::hex
             << Valorant::gObjectsStateRVA << std::dec << ";\n";
         out << "/// RVA of the uint32 GObjects key consumed by decrypt_gobjects().\n";
+        EmitSourceLine(out, "sigscan", {}, gObjectsKeyDrift, Valorant::kGObjectsKeyRVA);
         out << "constexpr uint32_t GObjectsKey       = 0x" << std::hex
             << Valorant::gObjectsKeyRVA << std::dec << ";\n";
         out << "/// Vtable index of UObject::ProcessEvent (zero-based).\n";
+        EmitSourceLine(out, "upstream");
         out << "constexpr int32_t  ProcessEventIndex = " << std::dec
             << Off::InSDK::ProcessEvent::PEIndex << ";\n\n";
 
@@ -121,9 +167,11 @@ namespace Valorant
         out << "//      that need the mask cipher have an anchor; port the case math\n";
         out << "//      from sub_9DAF50 if your consumer actually needs the mask path.\n";
         out << "/// RVA of the 7-qword FName mask cipher state array.\n";
+        EmitSourceLine(out, "hardcoded");
         out << "constexpr uint32_t FNameMaskState    = 0x" << std::hex
             << Valorant::kFNameMaskStateRVA << std::dec << ";\n";
         out << "/// RVA of the uint32 FName mask cipher key (= FNameMaskState + 0x38).\n";
+        EmitSourceLine(out, "hardcoded");
         out << "constexpr uint32_t FNameMaskKey      = 0x" << std::hex
             << Valorant::kFNameMaskKeyRVA << std::dec << ";\n\n";
 
@@ -133,44 +181,80 @@ namespace Valorant
         out << "// ============== Function Pointers ==============\n\n";
 
         out << "/// RVA of UObject::ProcessEvent from the module base.\n";
+        EmitSourceLine(out, "upstream");
         out << "constexpr uint32_t ProcessEvent      = 0x" << std::hex
             << Off::InSDK::ProcessEvent::PEOffset << std::dec << ";\n";
         out << "/// RVA of FName::AppendString (AppendNameToString) from the module base.\n";
+        EmitSourceLine(out, "upstream");
         out << "constexpr uint32_t AppendString      = 0x" << std::hex
             << Off::InSDK::Name::AppendNameToString << std::dec << ";\n";
         out << "/// RVA of StaticFindObject -- TODO: locate via UE-standard signature scan.\n";
+        EmitSourceLine(out, "hardcoded");
         out << "constexpr uint32_t StaticFindObject  = 0x" << std::hex
             << TodoOffsets::kStaticFindObject << std::dec << ";\n";
         out << "/// RVA of StaticLoadObject -- TODO: locate via UE-standard signature scan.\n";
+        EmitSourceLine(out, "missing", {}, false, 0, "StaticLoadObject");
         out << "constexpr uint32_t StaticLoadObject  = 0x" << std::hex
             << TodoOffsets::kStaticLoadObject << std::dec << ";\n";
         out << "/// RVA of FMemory::Malloc -- TODO: locate via UE-standard signature scan.\n";
+        EmitSourceLine(out, "missing", {}, false, 0, "FMemoryMalloc");
         out << "constexpr uint32_t FMemoryMalloc     = 0x" << std::hex
             << TodoOffsets::kFMemoryMalloc << std::dec << ";\n";
         out << "/// RVA of bone-matrix getter -- TODO: locate via vtable/xref pattern scan.\n";
+        EmitSourceLine(out, "missing", {}, false, 0, "BoneMatrix");
         out << "constexpr uint32_t BoneMatrix        = 0x" << std::hex
             << TodoOffsets::kBoneMatrix << std::dec << ";\n";
-        out << "/// RVA of SetOutlineMode UFunction -- auto-located via reflection (0 if missing).\n";
-        out << "constexpr uint32_t SetOutlineMode    = 0x" << std::hex
-            << Valorant::GameFunctions::SetOutlineMode << std::dec << ";\n";
-        out << "/// RVA of PlayFinisher UFunction -- auto-located via reflection (0 if missing).\n";
-        out << "constexpr uint32_t PlayFinisher      = 0x" << std::hex
-            << Valorant::GameFunctions::PlayFinisher << std::dec << ";\n";
-        out << "/// RVA of GetSpreadValues UFunction -- auto-located via reflection (0 if missing).\n";
-        out << "constexpr uint32_t GetSpreadValues   = 0x" << std::hex
-            << Valorant::GameFunctions::GetSpreadValues << std::dec << ";\n";
-        out << "/// RVA of GetSpreadAngles UFunction -- auto-located via reflection (0 if missing).\n";
-        out << "constexpr uint32_t GetSpreadAngles   = 0x" << std::hex
-            << Valorant::GameFunctions::GetSpreadAngles << std::dec << ";\n";
-        out << "/// RVA of ToVectorNormalize UFunction -- auto-located via reflection (0 if missing).\n";
-        out << "constexpr uint32_t ToVectorNormalize = 0x" << std::hex
-            << Valorant::GameFunctions::ToVectorNormalize << std::dec << ";\n";
-        out << "/// RVA of ToAngleNormalize UFunction -- auto-located via reflection (0 if missing).\n";
-        out << "constexpr uint32_t ToAngleNormalize  = 0x" << std::hex
-            << Valorant::GameFunctions::ToAngleNormalize << std::dec << ";\n";
-        out << "/// RVA of GetFiringLocAndDir UFunction -- auto-located via reflection (0 if missing).\n";
-        out << "constexpr uint32_t GetFiringLocAndDir = 0x" << std::hex
-            << Valorant::GameFunctions::GetFiringLocAndDir << std::dec << ";\n\n";
+
+        // UFunction-reflected game functions
+        auto EmitUFuncConst = [&](const char* constName, uint32_t rva,
+                                  const std::string& fullName,
+                                  const char* primaryTried, const char* altTried = nullptr)
+        {
+            const bool found  = (rva != 0);
+            const char* src   = found ? "reflection" : "missing";
+
+            if (found)
+                EmitSourceLine(out, src, fullName);
+            else
+            {
+                // Emit tried= list for missing entries
+                out << "/// source=missing  tried=[\"" << primaryTried << "\"";
+                if (altTried)
+                    out << ",\"" << altTried << "\"";
+                out << "]\n";
+            }
+            out << "constexpr uint32_t " << constName << " = 0x" << std::hex << rva << std::dec << ";\n";
+        };
+
+        out << "/// RVA of SetOutlineMode UFunction.\n";
+        EmitUFuncConst("SetOutlineMode   ", Valorant::GameFunctions::SetOutlineMode,
+                       Valorant::GameFunctions::SetOutlineModeFullName,
+                       "SetOutlineMode", "GetAresOutlineMode");
+        out << "/// RVA of PlayFinisher UFunction.\n";
+        EmitUFuncConst("PlayFinisher     ", Valorant::GameFunctions::PlayFinisher,
+                       Valorant::GameFunctions::PlayFinisherFullName,
+                       "PlayFinisher", "OnFinisherTriggered");
+        out << "/// RVA of GetSpreadValues UFunction.\n";
+        EmitUFuncConst("GetSpreadValues  ", Valorant::GameFunctions::GetSpreadValues,
+                       Valorant::GameFunctions::GetSpreadValuesFullName,
+                       "GetSpreadValues");
+        out << "/// RVA of GetSpreadAngles UFunction.\n";
+        EmitUFuncConst("GetSpreadAngles  ", Valorant::GameFunctions::GetSpreadAngles,
+                       Valorant::GameFunctions::GetSpreadAnglesFullName,
+                       "GetSpreadAngles");
+        out << "/// RVA of ToVectorNormalize UFunction.\n";
+        EmitUFuncConst("ToVectorNormalize", Valorant::GameFunctions::ToVectorNormalize,
+                       Valorant::GameFunctions::ToVectorNormalizeFullName,
+                       "ToVectorNormalize");
+        out << "/// RVA of ToAngleNormalize UFunction.\n";
+        EmitUFuncConst("ToAngleNormalize ", Valorant::GameFunctions::ToAngleNormalize,
+                       Valorant::GameFunctions::ToAngleNormalizeFullName,
+                       "ToAngleNormalize");
+        out << "/// RVA of GetFiringLocAndDir UFunction.\n";
+        EmitUFuncConst("GetFiringLocAndDir", Valorant::GameFunctions::GetFiringLocAndDir,
+                       Valorant::GameFunctions::GetFiringLocAndDirFullName,
+                       "GetFiringLocAndDir", "GetFiringLocationAndDirection");
+        out << "\n";
 
         // ------------------------------------------------------------------ //
         // GObjects Decrypt
@@ -398,6 +482,201 @@ namespace Valorant
 
         out << "} // namespace ValorantSDK\n";
         out.close();
+
+        std::cerr << "[Valorant] Wrote " << target.string() << "\n";
+
+        // ------------------------------------------------------------------ //
+        // Emit ValorantOffsets.json alongside the header
+        // ------------------------------------------------------------------ //
+        WriteOffsetsJson(OutputFolder);
+    }
+
+    void WriteOffsetsJson(const fs::path& OutputFolder)
+    {
+        using json = nlohmann::json;
+
+        const fs::path target = OutputFolder / "ValorantOffsets.json";
+
+        // Pre-compute drift flags
+        const bool gObjectsStateDrift = (Valorant::gObjectsStateRVA != Valorant::kGObjectsStateRVA);
+        const bool gObjectsKeyDrift   = (Valorant::gObjectsKeyRVA   != Valorant::kGObjectsKeyRVA);
+
+        // Helper: build a global-pointer entry
+        auto MakeGlobalPtr = [](const std::string& rva, const char* source,
+                                const char* confidence,
+                                const std::string& fallbackRva = {},
+                                bool drift = false) -> json
+        {
+            json obj;
+            obj["rva"]        = rva;
+            obj["source"]     = source;
+            obj["confidence"] = confidence;
+            if (!fallbackRva.empty())
+                obj["fallback_rva"] = fallbackRva;
+            if (drift)
+                obj["drift"] = true;
+            return obj;
+        };
+
+        // Helper: build a function-pointer entry
+        auto MakeFuncPtr = [](const std::string& rva, const char* source,
+                              const char* confidence,
+                              const std::string& fullName = {}) -> json
+        {
+            json obj;
+            obj["rva"]        = rva;
+            obj["source"]     = source;
+            obj["confidence"] = confidence;
+            if (!fullName.empty())
+                obj["full_name"] = fullName;
+            return obj;
+        };
+
+        // Helper: missing function entry with tried= list
+        auto MakeMissing = [](std::initializer_list<const char*> tried) -> json
+        {
+            json obj;
+            obj["rva"]        = "0x0";
+            obj["source"]     = "missing";
+            obj["confidence"] = "n/a";
+            json triedArr = json::array();
+            for (const char* t : tried)
+                triedArr.push_back(t);
+            obj["tried"] = triedArr;
+            return obj;
+        };
+
+        // UFunction entry: reflection if found, missing otherwise
+        auto MakeUFunc = [&](uint32_t rva, const std::string& fullName,
+                             std::initializer_list<const char*> tried) -> json
+        {
+            if (rva != 0)
+                return MakeFuncPtr(HexRva(rva), "reflection", "high", fullName);
+            return MakeMissing(tried);
+        };
+
+        json root;
+
+        // -- build section
+        {
+            json build;
+            build["game_name"]    = Settings::Generator::GameName;
+            build["game_version"] = Settings::Generator::GameVersion;
+            build["generated_at"] = GetUtcTimestamp();
+            root["build"] = std::move(build);
+        }
+
+        // -- global_pointers section
+        {
+            json gp;
+            gp["GWorld"] = MakeGlobalPtr("0x0", "stripped", "n/a");
+            gp["FNamePool"] = MakeGlobalPtr(
+                HexRva(static_cast<uint32_t>(Off::InSDK::NameArray::GNames)),
+                "upstream", "high");
+            gp["GObjectsState"] = MakeGlobalPtr(
+                HexRva(Valorant::gObjectsStateRVA),
+                "sigscan", "high",
+                HexRva(Valorant::kGObjectsStateRVA),
+                gObjectsStateDrift);
+            gp["GObjectsKey"] = MakeGlobalPtr(
+                HexRva(Valorant::gObjectsKeyRVA),
+                "sigscan", "high",
+                HexRva(Valorant::kGObjectsKeyRVA),
+                gObjectsKeyDrift);
+            gp["FNameMaskState"] = MakeGlobalPtr(
+                HexRva(Valorant::kFNameMaskStateRVA),
+                "hardcoded", "medium");
+            gp["FNameMaskKey"] = MakeGlobalPtr(
+                HexRva(Valorant::kFNameMaskKeyRVA),
+                "hardcoded", "medium");
+
+            json peIdx;
+            peIdx["value"]      = Off::InSDK::ProcessEvent::PEIndex;
+            peIdx["source"]     = "upstream";
+            peIdx["confidence"] = "high";
+            gp["ProcessEventIndex"] = std::move(peIdx);
+
+            root["global_pointers"] = std::move(gp);
+        }
+
+        // -- function_pointers section
+        {
+            json fp;
+            fp["ProcessEvent"] = MakeFuncPtr(
+                HexRva(static_cast<uint32_t>(Off::InSDK::ProcessEvent::PEOffset)),
+                "upstream", "high");
+            fp["AppendString"] = MakeFuncPtr(
+                HexRva(static_cast<uint32_t>(Off::InSDK::Name::AppendNameToString)),
+                "upstream", "high");
+            fp["StaticFindObject"] = MakeFuncPtr(
+                HexRva(TodoOffsets::kStaticFindObject),
+                "hardcoded", "medium");
+            fp["StaticLoadObject"] = MakeMissing({"StaticLoadObject"});
+            fp["FMemoryMalloc"]    = MakeMissing({"FMemoryMalloc"});
+            fp["BoneMatrix"]       = MakeMissing({"BoneMatrix"});
+            fp["SetOutlineMode"]   = MakeUFunc(
+                Valorant::GameFunctions::SetOutlineMode,
+                Valorant::GameFunctions::SetOutlineModeFullName,
+                {"SetOutlineMode", "GetAresOutlineMode"});
+            fp["PlayFinisher"]     = MakeUFunc(
+                Valorant::GameFunctions::PlayFinisher,
+                Valorant::GameFunctions::PlayFinisherFullName,
+                {"PlayFinisher", "OnFinisherTriggered"});
+            fp["GetSpreadValues"]  = MakeUFunc(
+                Valorant::GameFunctions::GetSpreadValues,
+                Valorant::GameFunctions::GetSpreadValuesFullName,
+                {"GetSpreadValues"});
+            fp["GetSpreadAngles"]  = MakeUFunc(
+                Valorant::GameFunctions::GetSpreadAngles,
+                Valorant::GameFunctions::GetSpreadAnglesFullName,
+                {"GetSpreadAngles"});
+            fp["ToVectorNormalize"] = MakeUFunc(
+                Valorant::GameFunctions::ToVectorNormalize,
+                Valorant::GameFunctions::ToVectorNormalizeFullName,
+                {"ToVectorNormalize"});
+            fp["ToAngleNormalize"] = MakeUFunc(
+                Valorant::GameFunctions::ToAngleNormalize,
+                Valorant::GameFunctions::ToAngleNormalizeFullName,
+                {"ToAngleNormalize"});
+            fp["GetFiringLocAndDir"] = MakeUFunc(
+                Valorant::GameFunctions::GetFiringLocAndDir,
+                Valorant::GameFunctions::GetFiringLocAndDirFullName,
+                {"GetFiringLocAndDir", "GetFiringLocationAndDirection"});
+
+            root["function_pointers"] = std::move(fp);
+        }
+
+        // -- ue_offsets section (sdk-stable UE class layout constants)
+        {
+            json ue;
+            auto FmtOff = [](uint32_t v) -> std::string { return HexRva(v); };
+            ue["UEngine_GameViewport"]                    = FmtOff(0x0BD0);
+            ue["UGameViewportClient_World"]               = FmtOff(0x0080);
+            ue["UGameViewportClient_GameInstance"]        = FmtOff(0x0088);
+            ue["UGameInstance_LocalPlayers"]              = FmtOff(0x0040);
+            ue["ULocalPlayer_PlayerController"]           = FmtOff(0x0038);
+            ue["APlayerController_AcknowledgedPawn"]      = FmtOff(0x0518);
+            ue["APlayerController_PlayerCameraManager"]   = FmtOff(0x0528);
+            ue["APlayerCameraManager_CameraCachePrivate"] = FmtOff(0x17B0);
+            ue["UWorld_PersistentLevel"]                  = FmtOff(0x0038);
+            ue["UWorld_Levels"]                           = FmtOff(0x0190);
+            ue["UWorld_OwningGameInstance"]               = FmtOff(0x01D8);
+            ue["ULevel_Actors"]                           = FmtOff(0x00A0);
+            ue["ULevel_OwningWorld"]                      = FmtOff(0x00C0);
+            ue["UObject_ClassPrivate"]                    = FmtOff(0x0010);
+            ue["UObject_NamePrivate"]                     = FmtOff(0x0018);
+            ue["UStruct_SuperStruct"]                     = FmtOff(0x0048);
+            root["ue_offsets"] = std::move(ue);
+        }
+
+        std::ofstream jout(target);
+        if (!jout.is_open())
+        {
+            std::cerr << "[Valorant] Failed to open " << target << " for write.\n";
+            return;
+        }
+        jout << root.dump(2) << "\n";
+        jout.close();
 
         std::cerr << "[Valorant] Wrote " << target.string() << "\n";
     }
