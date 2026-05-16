@@ -1,5 +1,6 @@
 #include "Valorant/Output.h"
 #include "Valorant/Decryption.h"
+#include "Valorant/FunctionLocator.h"
 
 #include "OffsetFinder/Offsets.h"
 #include "Settings.h"
@@ -170,27 +171,27 @@ namespace Valorant
         out << "/// RVA of bone-matrix getter -- TODO: locate via vtable/xref pattern scan.\n";
         out << "constexpr uint32_t BoneMatrix        = 0x" << std::hex
             << TodoOffsets::kBoneMatrix << std::dec << ";\n";
-        out << "/// RVA of SetOutlineMode -- TODO: locate via Valorant string anchor.\n";
+        out << "/// RVA of SetOutlineMode UFunction -- auto-located via reflection (0 if missing).\n";
         out << "constexpr uint32_t SetOutlineMode    = 0x" << std::hex
-            << TodoOffsets::kSetOutlineMode << std::dec << ";\n";
-        out << "/// RVA of PlayFinisher -- TODO: locate via Valorant string anchor.\n";
+            << Valorant::GameFunctions::SetOutlineMode << std::dec << ";\n";
+        out << "/// RVA of PlayFinisher UFunction -- auto-located via reflection (0 if missing).\n";
         out << "constexpr uint32_t PlayFinisher      = 0x" << std::hex
-            << TodoOffsets::kPlayFinisher << std::dec << ";\n";
-        out << "/// RVA of GetSpreadValues -- TODO: locate via GetSpread* string anchor.\n";
+            << Valorant::GameFunctions::PlayFinisher << std::dec << ";\n";
+        out << "/// RVA of GetSpreadValues UFunction -- auto-located via reflection (0 if missing).\n";
         out << "constexpr uint32_t GetSpreadValues   = 0x" << std::hex
-            << TodoOffsets::kGetSpreadValues << std::dec << ";\n";
-        out << "/// RVA of GetSpreadAngles -- TODO: locate via GetSpread* string anchor.\n";
+            << Valorant::GameFunctions::GetSpreadValues << std::dec << ";\n";
+        out << "/// RVA of GetSpreadAngles UFunction -- auto-located via reflection (0 if missing).\n";
         out << "constexpr uint32_t GetSpreadAngles   = 0x" << std::hex
-            << TodoOffsets::kGetSpreadAngles << std::dec << ";\n";
-        out << "/// RVA of ToVector/AngleNormalize -- TODO: locate via vtable/xref scan.\n";
+            << Valorant::GameFunctions::GetSpreadAngles << std::dec << ";\n";
+        out << "/// RVA of ToVectorNormalize UFunction -- auto-located via reflection (0 if missing).\n";
         out << "constexpr uint32_t ToVectorNormalize = 0x" << std::hex
-            << TodoOffsets::kToVectorNormalize << std::dec << ";\n";
-        out << "/// RVA of ToAngle/AngleNormalize variant -- TODO: locate via vtable/xref scan.\n";
+            << Valorant::GameFunctions::ToVectorNormalize << std::dec << ";\n";
+        out << "/// RVA of ToAngleNormalize UFunction -- auto-located via reflection (0 if missing).\n";
         out << "constexpr uint32_t ToAngleNormalize  = 0x" << std::hex
-            << TodoOffsets::kToAngleNormalize << std::dec << ";\n";
-        out << "/// RVA of GetFiringLocAndDir -- TODO: locate via vtable/xref pattern scan.\n";
+            << Valorant::GameFunctions::ToAngleNormalize << std::dec << ";\n";
+        out << "/// RVA of GetFiringLocAndDir UFunction -- auto-located via reflection (0 if missing).\n";
         out << "constexpr uint32_t GetFiringLocAndDir = 0x" << std::hex
-            << TodoOffsets::kGetFiringLocAndDir << std::dec << ";\n\n";
+            << Valorant::GameFunctions::GetFiringLocAndDir << std::dec << ";\n\n";
 
         // ------------------------------------------------------------------ //
         // GObjects Decrypt
@@ -284,6 +285,42 @@ namespace Valorant
         out << "        const uint8_t k = static_cast<uint8_t>((key >> ((i & 3) * 8)) & 0xFF);\n";
         out << "        buf[i] ^= static_cast<uint8_t>(len) ^ k;\n";
         out << "    }\n";
+        out << "}\n\n";
+
+        // ------------------------------------------------------------------ //
+        // FName Mask Cipher (sub_9DAF50)
+        // ------------------------------------------------------------------ //
+        out << "// ============== FName Mask Cipher (sub_9DAF50) ==============\n\n";
+        out << "// Optional secondary cipher. The simple per-byte XOR path above is what\n";
+        out << "// resolves FNames in the current patch; this mask cipher is exposed for\n";
+        out << "// consumers that need to mirror sub_9DAF50's output (e.g. if a future\n";
+        out << "// patch wires it into the FName resolution path).\n\n";
+
+        out << "/// Reads FNameMaskState[7] + FNameMaskKey from the live module and returns\n";
+        out << "/// the decrypted mask qword (ported from sub_9DAF50, read path).\n";
+        out << "__forceinline uint64_t fname_decrypt_mask(uintptr_t module_base)\n";
+        out << "{\n";
+        out << "    constexpr uint64_t kMagic = 0x2545F4914F6CDD1DULL;\n";
+        out << "    const uint64_t* statePtr = reinterpret_cast<const uint64_t*>(module_base + FNameMaskState);\n";
+        out << "    const uint32_t  key      = *reinterpret_cast<const uint32_t*>(module_base + FNameMaskKey);\n";
+        out << "    uint64_t state[7];\n";
+        out << "    for (int i = 0; i < 7; ++i) state[i] = statePtr[i];\n\n";
+        out << "    const uint32_t mix  = key ^ (((key ^ (key >> 15)) >> 12)) ^ (key << 25);\n";
+        out << "    const uint64_t hash = kMagic * static_cast<uint64_t>(mix);\n";
+        out << "    const uint32_t hi   = static_cast<uint32_t>(hash >> 32);\n";
+        out << "    const uint32_t idx  = static_cast<uint32_t>(hash % 7ULL);\n";
+        out << "    uint64_t v = state[idx];\n\n";
+        out << "    switch (idx)\n";
+        out << "    {\n";
+        out << "    case 0: v = ~(v + static_cast<uint64_t>(static_cast<uint32_t>(hi - 1))); break;\n";
+        out << "    case 1: v = stage1(v ^ ~static_cast<uint64_t>(static_cast<uint32_t>(hi + 2 * idx))); break;\n";
+        out << "    case 2: v = ~stage1(v); break;\n";
+        out << "    case 3: v = stage1(v + static_cast<uint64_t>(static_cast<uint32_t>(hi + 2 * idx))); break;\n";
+        out << "    case 4: v = bitrev64(stage1(v)); break;\n";
+        out << "    case 5: { uint32_t a1 = ((hi + 2 * idx) % 63) + 1; uint32_t a2 = ((hi + idx) % 63) + 1; v = rol64(rol64(v, a1), a2); break; }\n";
+        out << "    case 6: { uint32_t a  = ((hi + 2 * idx) % 63) + 1; v = bitrev64(ror64(v, a)); break; }\n";
+        out << "    }\n\n";
+        out << "    return v ^ static_cast<uint64_t>(key);\n";
         out << "}\n\n";
 
         // ------------------------------------------------------------------ //
@@ -384,5 +421,172 @@ namespace Valorant
         out.close();
 
         std::cerr << "[Valorant] Wrote " << target.string() << "\n";
+
+        // ------------------------------------------------------------------ //
+        // AngelScript sidecar: ValorantDecrypt.as
+        // ------------------------------------------------------------------ //
+        const fs::path asTarget = OutputFolder / "ValorantDecrypt.as";
+        std::ofstream as(asTarget);
+        if (!as.is_open())
+        {
+            std::cerr << "[Valorant] Failed to open " << asTarget << " for write.\n";
+            return;
+        }
+
+        as << "// ValorantDecrypt.as -- AngelScript sidecar generated by Dumper-7-VGK.\n";
+        as << "// Constants and decrypt helpers mirroring ValorantDecrypt.h, ready to\n";
+        as << "// #include from a Perception AngelScript consumer.\n";
+        as << "//\n";
+        as << "// Build: " << Settings::Generator::GameVersion << "-"
+                           << Settings::Generator::GameName << "\n";
+        as << "// Generated at: " << GetUtcTimestamp() << "\n\n";
+
+        as << "namespace ValorantSDK\n";
+        as << "{\n\n";
+
+        // ---- RVA constants ------------------------------------------------
+        as << "    // RVA constants (from module base) -- same values as ValorantDecrypt.h\n\n";
+
+        as << "    const uint64 GWorld            = 0x" << std::hex
+           << Off::InSDK::World::GWorld << std::dec << ";\n";
+        as << "    const uint64 FNamePool         = 0x" << std::hex
+           << Off::InSDK::NameArray::GNames << std::dec << ";\n";
+        as << "    const uint64 GObjectsState     = 0x" << std::hex
+           << Valorant::kGObjectsStateRVA << std::dec << ";\n";
+        as << "    const uint64 GObjectsKey       = 0x" << std::hex
+           << Valorant::kGObjectsKeyRVA << std::dec << ";\n";
+        as << "    const uint64 FNameMaskState    = 0x" << std::hex
+           << FNameMaskOffsets::kStateRVA << std::dec << ";\n";
+        as << "    const uint64 FNameMaskKey      = 0x" << std::hex
+           << FNameMaskOffsets::kKeyRVA << std::dec << ";\n";
+        as << "    const int    ProcessEventIndex = "   << std::dec
+           << Off::InSDK::ProcessEvent::PEIndex << ";\n\n";
+
+        as << "    const uint64 ProcessEvent      = 0x" << std::hex
+           << Off::InSDK::ProcessEvent::PEOffset << std::dec << ";\n";
+        as << "    const uint64 AppendString      = 0x" << std::hex
+           << Off::InSDK::Name::AppendNameToString << std::dec << ";\n";
+        as << "    const uint64 StaticFindObject  = 0x" << std::hex
+           << TodoOffsets::kStaticFindObject << std::dec << ";\n";
+        as << "    const uint64 SetOutlineMode    = 0x" << std::hex
+           << Valorant::GameFunctions::SetOutlineMode << std::dec << ";\n";
+        as << "    const uint64 PlayFinisher      = 0x" << std::hex
+           << Valorant::GameFunctions::PlayFinisher << std::dec << ";\n";
+        as << "    const uint64 GetSpreadValues   = 0x" << std::hex
+           << Valorant::GameFunctions::GetSpreadValues << std::dec << ";\n";
+        as << "    const uint64 GetSpreadAngles   = 0x" << std::hex
+           << Valorant::GameFunctions::GetSpreadAngles << std::dec << ";\n";
+        as << "    const uint64 GetFiringLocAndDir = 0x" << std::hex
+           << Valorant::GameFunctions::GetFiringLocAndDir << std::dec << ";\n";
+        as << "    const uint64 ToVectorNormalize = 0x" << std::hex
+           << Valorant::GameFunctions::ToVectorNormalize << std::dec << ";\n";
+        as << "    const uint64 ToAngleNormalize  = 0x" << std::hex
+           << Valorant::GameFunctions::ToAngleNormalize << std::dec << ";\n\n";
+
+        // ---- Cipher constants ---------------------------------------------
+        as << "    // Magic + masks for both ciphers\n";
+        as << "    const uint64 MAGIC      = 0x2545F4914F6CDD1D;\n";
+        as << "    const uint64 MASK_AAAA  = 0xAAAAAAAAAAAAAAAA;\n";
+        as << "    const uint64 MASK_CCCC  = 0xCCCCCCCCCCCCCCCC;\n";
+        as << "    const uint64 MASK_F0F0  = 0xF0F0F0F0F0F0F0F0;\n";
+        as << "    const uint64 MASK_FF00  = 0xFF00FF00FF00FF00;\n";
+        as << "    const uint32 FNAME_NONE_MASK = 0x616A6B4A;\n\n";
+
+        // ---- Bit helpers --------------------------------------------------
+        as << "    // Bit helpers\n";
+        as << "    uint64 rol64(uint64 v, uint32 n)\n";
+        as << "    {\n";
+        as << "        n = n & 63;\n";
+        as << "        if (n == 0) return v;\n";
+        as << "        return (v << n) | (v >> (64 - n));\n";
+        as << "    }\n";
+        as << "    uint64 ror64(uint64 v, uint32 n)\n";
+        as << "    {\n";
+        as << "        n = n & 63;\n";
+        as << "        if (n == 0) return v;\n";
+        as << "        return (v >> n) | (v << (64 - n));\n";
+        as << "    }\n";
+        as << "    uint64 stage1(uint64 v) { return (v >> 1) ^ (((v >> 1) ^ (v << 1)) & MASK_AAAA); }\n";
+        as << "    uint64 stage2(uint64 v) { return (v >> 2) ^ (((v >> 2) ^ (v << 2)) & MASK_CCCC); }\n";
+        as << "    uint64 stage3(uint64 v) { return (v >> 4) ^ (((v >> 4) ^ (v << 4)) & MASK_F0F0); }\n";
+        as << "    uint64 stage4(uint64 v) { return (v >> 8) ^ (((v >> 8) ^ (v << 8)) & MASK_FF00); }\n";
+        as << "    uint64 bitrev64(uint64 v) { return ror64(stage4(stage3(stage2(stage1(v)))), 32); }\n\n";
+
+        // ---- GObjects decrypt ---------------------------------------------
+        as << "    // GObjects decrypt -- pure math; consumer reads state/key from proc.\n";
+        as << "    uint64 decrypt_gobjects(uint32 key, const array<uint64> &in state)\n";
+        as << "    {\n";
+        as << "        uint32 mix  = key ^ (((key ^ (key >> 15)) >> 12)) ^ (key << 25);\n";
+        as << "        uint64 hash = MAGIC * uint64(mix);\n";
+        as << "        uint32 hi   = uint32(hash >> 32);\n";
+        as << "        uint32 idx  = uint32(hash % 7);\n";
+        as << "        uint64 v    = state[idx];\n\n";
+        as << "        if      (idx == 0) { v = v ^ uint64(hi); }\n";
+        as << "        else if (idx == 1) { uint32 a = ((hi + 2*idx) % 63) + 1; v = uint64(uint32(hi + idx)) + rol64(v, a); }\n";
+        as << "        else if (idx == 2) { v = (~v) - uint64(uint32(hi + idx)); }\n";
+        as << "        else if (idx == 3) { uint32 a = ((hi + idx)   % 63) + 1; v = ror64(bitrev64(v), a); }\n";
+        as << "        else if (idx == 4) { v = v + uint64(uint32(hi + 2*idx)) + uint64(uint32(hi + idx)); }\n";
+        as << "        else if (idx == 5) { uint32 a = ((hi + idx)   % 63) + 1; v = rol64(stage1(v), a); }\n";
+        as << "        else /* idx == 6 */{ uint32 a = ((hi + idx)   % 63) + 1; v = ror64(uint64(uint32(hi + 2*idx)) + v, a); }\n\n";
+        as << "        return v ^ uint64(key);\n";
+        as << "    }\n\n";
+
+        // ---- FName mask cipher --------------------------------------------
+        as << "    // FName mask cipher (sub_9DAF50) -- read-path decrypt.\n";
+        as << "    uint64 fname_decrypt_mask(uint32 key, const array<uint64> &in state)\n";
+        as << "    {\n";
+        as << "        uint32 mix  = key ^ (((key ^ (key >> 15)) >> 12)) ^ (key << 25);\n";
+        as << "        uint64 hash = MAGIC * uint64(mix);\n";
+        as << "        uint32 hi   = uint32(hash >> 32);\n";
+        as << "        uint32 idx  = uint32(hash % 7);\n";
+        as << "        uint64 v    = state[idx];\n\n";
+        as << "        if      (idx == 0) { v = ~(v + uint64(uint32(hi - 1))); }\n";
+        as << "        else if (idx == 1) { v = stage1(v ^ ~uint64(uint32(hi + 2*idx))); }\n";
+        as << "        else if (idx == 2) { v = ~stage1(v); }\n";
+        as << "        else if (idx == 3) { v = stage1(v + uint64(uint32(hi + 2*idx))); }\n";
+        as << "        else if (idx == 4) { v = bitrev64(stage1(v)); }\n";
+        as << "        else if (idx == 5) { uint32 a1 = ((hi + 2*idx) % 63) + 1; uint32 a2 = ((hi + idx) % 63) + 1; v = rol64(rol64(v, a1), a2); }\n";
+        as << "        else /* idx == 6 */{ uint32 a  = ((hi + 2*idx) % 63) + 1; v = bitrev64(ror64(v, a)); }\n\n";
+        as << "        return v ^ uint64(key);\n";
+        as << "    }\n\n";
+
+        // ---- read_gobjects convenience -------------------------------------
+        as << "    // Convenience: read state[7] + key from the live module and decrypt GObjects.\n";
+        as << "    uint64 read_gobjects(proc_t &in p, uint64 module_base)\n";
+        as << "    {\n";
+        as << "        array<uint64> state;\n";
+        as << "        state.resize(7);\n";
+        as << "        for (uint i = 0; i < 7; i++)\n";
+        as << "            state[i] = p.ru64(module_base + GObjectsState + uint64(i) * 8);\n";
+        as << "        uint32 key = p.ru32(module_base + GObjectsKey);\n";
+        as << "        return decrypt_gobjects(key, state);\n";
+        as << "    }\n\n";
+
+        // ---- recover_fname_key --------------------------------------------
+        as << "    // FName key recovery from the \"None\" entry's known plaintext.\n";
+        as << "    uint32 recover_fname_key(proc_t &in p, uint64 fname_pool_base)\n";
+        as << "    {\n";
+        as << "        uint64 chunk0 = p.ru64(fname_pool_base + 0x10);\n";
+        as << "        if (chunk0 == 0) return 0;\n";
+        as << "        uint64 entry = chunk0 + 12;\n";
+        as << "        uint32 enc4  = p.ru32(entry + 6);\n";
+        as << "        return enc4 ^ FNAME_NONE_MASK;\n";
+        as << "    }\n\n";
+
+        // ---- fname_decrypt_bytes ------------------------------------------
+        as << "    // Decrypt FName bytes in-place using the recovered key.\n";
+        as << "    void fname_decrypt_bytes(array<uint8> &inout buf, uint16 len, uint32 key)\n";
+        as << "    {\n";
+        as << "        for (uint16 i = 0; i < len; i++)\n";
+        as << "        {\n";
+        as << "            uint8 k = uint8((key >> ((i & 3) * 8)) & 0xFF);\n";
+        as << "            buf[i] = uint8(uint32(buf[i]) ^ uint32(len) ^ uint32(k));\n";
+        as << "        }\n";
+        as << "    }\n\n";
+
+        as << "} // namespace ValorantSDK\n";
+        as.close();
+
+        std::cerr << "[Valorant] Wrote " << asTarget.string() << "\n";
     }
 }
