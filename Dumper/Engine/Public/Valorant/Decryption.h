@@ -44,8 +44,15 @@ namespace Valorant
     inline constexpr uint64_t kMagic = 0x2545F4914F6CDD1DULL;
 
     // Patch-specific RVAs — update when the binary changes.
+    // These are used as a fallback if the runtime signature scan fails.
     inline constexpr uint32_t kGObjectsStateRVA = 0xA62E600;
     inline constexpr uint32_t kGObjectsKeyRVA   = 0xA62E638;
+
+    // Runtime-resolved RVAs (populated by LocateGObjectsStruct at startup).
+    // Initialized to the hardcoded fallback values so FindGObjects() works
+    // even when the scan is not called.
+    inline uint32_t gObjectsStateRVA = kGObjectsStateRVA;
+    inline uint32_t gObjectsKeyRVA   = kGObjectsKeyRVA;
 
     // Returns the live FUObjectArray header address (absolute pointer in the
     // game's heap). Returns nullptr on failure with diagnostic to stderr.

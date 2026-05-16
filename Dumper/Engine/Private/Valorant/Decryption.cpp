@@ -95,6 +95,134 @@ namespace Valorant
         return static_cast<uint32_t>(hash % 7ULL);
     }
 
+    // -----------------------------------------------------------------------
+    // LocateGObjectsStruct
+    //
+    // Scans the module for every occurrence of kMagic (0x2545F4914F6CDD1D),
+    // then walks backward up to 100 bytes from each hit looking for the
+    // RIP-relative LEA that loads the encrypted-globals struct base.
+    //
+    // LEA encoding (x64):  48 8D <modrm> <disp32>   (7 bytes total)
+    //   modrm high 2 bits must be 00 (RIP-relative), bits [5:3] = destination
+    //   register (any), bits [2:0] = 101 (disp32 follows).
+    //
+    // The struct layout (from IDA: dword_BASE[2*v5+16] → base + 8*v5 + 64):
+    //   state[7] lives at base + 0x40   (64 bytes in)
+    //   key      lives at base + 0x78   (state[7] = 0x38 bytes, then 0x00..0x37,
+    //                                    key is the next dword at +0x38 from
+    //                                    state[0], i.e. base+0x40+0x38 = base+0x78)
+    //
+    // For each candidate struct base, attempt the decrypt, validate the
+    // resulting FUObjectArray pointer, and on the first successful validation
+    // store the RVAs in gObjectsStateRVA / gObjectsKeyRVA.
+    //
+    // Returns true on success, false if no valid candidate was found (caller
+    // falls back to the hardcoded RVAs).
+    // -----------------------------------------------------------------------
+    static bool LocateGObjectsStruct()
+    {
+        const uintptr_t modBase = Platform::GetModuleBase();
+        if (!modBase)
+            return false;
+
+        // Enumerate every occurrence of kMagic in the module's sections.
+        uintptr_t searchStart = 0x0;
+
+        for (int hitCount = 0; hitCount < 256; ++hitCount)
+        {
+            uint64_t* magicPtr = Platform::FindAlignedValueInAllSections<uint64_t>(
+                kMagic,
+                /*Alignment=*/1,
+                searchStart,
+                /*Range=*/0);
+
+            if (!magicPtr)
+                break; // no more hits
+
+            const uintptr_t magicAddr = reinterpret_cast<uintptr_t>(magicPtr);
+
+            // Advance past this hit for the next iteration.
+            searchStart = magicAddr + sizeof(uint64_t);
+
+            // Walk backward up to 100 bytes looking for LEA with RIP-relative disp32.
+            // Pattern: 48 8D [modrm where top 2 bits == 00 and low 3 bits == 101] [disp32]
+            const uintptr_t scanStart = (magicAddr > 100) ? (magicAddr - 100) : 0;
+
+            for (uintptr_t cur = magicAddr >= 7 ? magicAddr - 7 : 0;
+                 cur >= scanStart && cur < magicAddr;
+                 --cur)
+            {
+                if (Platform::IsBadReadPtr(cur))
+                    break;
+
+                const uint8_t* p = reinterpret_cast<const uint8_t*>(cur);
+
+                // REX.W prefix + LEA opcode
+                if (p[0] != 0x48 || p[1] != 0x8D)
+                    continue;
+
+                // ModRM: mod==00, rm==101 → RIP-relative disp32
+                const uint8_t modrm = p[2];
+                if ((modrm & 0xC7) != 0x05)
+                    continue;
+
+                // Decode: target = lea_instr_addr + 7 + sign-extended disp32
+                int32_t disp32;
+                std::memcpy(&disp32, p + 3, sizeof(disp32));
+                const uintptr_t structBase = cur + 7 + static_cast<uintptr_t>(static_cast<intptr_t>(disp32));
+
+                if (Platform::IsBadReadPtr(structBase) ||
+                    Platform::IsBadReadPtr(structBase + 0x78 + 3))
+                    continue;
+
+                // state[0..6] starts at structBase + 0x40
+                // key (uint32) sits at structBase + 0x78
+                const uintptr_t candidateState = structBase + 0x40;
+                const uintptr_t candidateKey   = structBase + 0x78;
+
+                const uint32_t key = *reinterpret_cast<const uint32_t*>(candidateKey);
+                if (key == 0)
+                    continue;
+
+                uint64_t state[7];
+                std::memcpy(state, reinterpret_cast<const void*>(candidateState), sizeof(state));
+
+                const uint64_t decrypted = DecryptGObjectsPtr(key, state);
+                uint8_t* fuoa = reinterpret_cast<uint8_t*>(decrypted);
+                if (Platform::IsBadReadPtr(fuoa))
+                    continue;
+
+                // Validate the FUObjectArray header (mirrors FindGObjects validation).
+                const int32_t numElems  = *reinterpret_cast<int32_t*>(fuoa + 0x14);
+                const int32_t maxElems  = *reinterpret_cast<int32_t*>(fuoa + 0x10);
+                const int32_t numChunks = *reinterpret_cast<int32_t*>(fuoa + 0x1C);
+                const int32_t maxChunks = *reinterpret_cast<int32_t*>(fuoa + 0x18);
+                void* const   chunks    = *reinterpret_cast<void**>(fuoa + 0x00);
+
+                if (numElems < 0x100 || numElems > maxElems ||
+                    maxElems > 0x4000000 ||
+                    numChunks < 1 || numChunks > maxChunks ||
+                    maxChunks < 1 || maxChunks > 0x800 ||
+                    Platform::IsBadReadPtr(chunks))
+                    continue;
+
+                // Candidate validated — store the RVAs.
+                const uint32_t stateRVA = static_cast<uint32_t>(candidateState - modBase);
+                const uint32_t keyRVA   = static_cast<uint32_t>(candidateKey   - modBase);
+
+                std::cerr << "[Valorant] sig scan: state @ 0x" << std::hex << stateRVA
+                          << ", key @ 0x" << keyRVA << std::dec << "\n";
+
+                gObjectsStateRVA = stateRVA;
+                gObjectsKeyRVA   = keyRVA;
+                return true;
+            }
+        }
+
+        std::cerr << "[Valorant] sig scan failed, falling back to hardcoded RVAs\n";
+        return false;
+    }
+
     uint8_t* FindGObjects()
     {
         const uintptr_t modBase = Platform::GetModuleBase();
@@ -104,8 +232,12 @@ namespace Valorant
             return nullptr;
         }
 
-        const uintptr_t stateAddr = modBase + kGObjectsStateRVA;
-        const uintptr_t keyAddr   = modBase + kGObjectsKeyRVA;
+        // Attempt runtime location first; on failure gObjectsStateRVA/gObjectsKeyRVA
+        // retain their hardcoded initializer values.
+        LocateGObjectsStruct();
+
+        const uintptr_t stateAddr = modBase + gObjectsStateRVA;
+        const uintptr_t keyAddr   = modBase + gObjectsKeyRVA;
 
         if (Platform::IsBadReadPtr(stateAddr) || Platform::IsBadReadPtr(keyAddr))
         {
