@@ -4,6 +4,7 @@
 #include "OffsetFinder/Offsets.h"
 #include "Platform.h"
 
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 
@@ -33,7 +34,7 @@ namespace Valorant
     // ---------- the GObjects decrypt variant ----------
     // Direct port of the case statements in sub_EA1980 (cross-verified against
     // sub_3638AC0). Both functions are inline copies of the same accessor.
-    static uint64_t DecryptGObjectsPtr(uint32_t key, const uint64_t state[7])
+    static uint64_t DecryptGObjectsPtrImpl(uint32_t key, const uint64_t state[7])
     {
         const uint32_t mix  = key ^ (((key ^ (key >> 15)) >> 12)) ^ (key << 25);
         const uint64_t hash = kMagic * static_cast<uint64_t>(mix);
@@ -155,6 +156,11 @@ namespace Valorant
         return DecryptFNameMaskPtr(key, state);
     }
 
+    uint64_t DecryptGObjectsPtr(uint32_t key, const uint64_t state[7])
+    {
+        return DecryptGObjectsPtrImpl(key, state);
+    }
+
     // Helper to recompute the case selector for logging — mirrors the same
     // math as DecryptGObjectsPtr so the printed case matches the path taken.
     static uint32_t ComputeCaseIndex(uint32_t key)
@@ -165,7 +171,7 @@ namespace Valorant
     }
 
     // -----------------------------------------------------------------------
-    // LocateGObjectsStruct
+    // FindEncryptedGlobalsStructRVA  (generic framework)
     //
     // Scans the module for every occurrence of kMagic (0x2545F4914F6CDD1D),
     // then walks backward up to 100 bytes from each hit looking for the
@@ -175,26 +181,18 @@ namespace Valorant
     //   modrm high 2 bits must be 00 (RIP-relative), bits [5:3] = destination
     //   register (any), bits [2:0] = 101 (disp32 follows).
     //
-    // The struct layout (from IDA: dword_BASE[2*v5+16] → base + 8*v5 + 64):
-    //   state[7] lives at base + 0x40   (64 bytes in)
-    //   key      lives at base + 0x78   (state[7] = 0x38 bytes, then 0x00..0x37,
-    //                                    key is the next dword at +0x38 from
-    //                                    state[0], i.e. base+0x40+0x38 = base+0x78)
+    // For each decoded struct base, the provided `validator` callback is
+    // invoked. The first candidate for which validator returns true is
+    // accepted; its RVA (relative to module base) is returned.
     //
-    // For each candidate struct base, attempt the decrypt, validate the
-    // resulting FUObjectArray pointer, and on the first successful validation
-    // store the RVAs in gObjectsStateRVA / gObjectsKeyRVA.
-    //
-    // Returns true on success, false if no valid candidate was found (caller
-    // falls back to the hardcoded RVAs).
+    // Returns 0 if no valid candidate was found.
     // -----------------------------------------------------------------------
-    static bool LocateGObjectsStruct()
+    uint32_t FindEncryptedGlobalsStructRVA(StructValidator validator)
     {
         const uintptr_t modBase = Platform::GetModuleBase();
         if (!modBase)
-            return false;
+            return 0;
 
-        // Enumerate every occurrence of kMagic in the module's sections.
         uintptr_t searchStart = 0x0;
 
         for (int hitCount = 0; hitCount < 256; ++hitCount)
@@ -206,15 +204,11 @@ namespace Valorant
                 /*Range=*/0);
 
             if (!magicPtr)
-                break; // no more hits
+                break;
 
             const uintptr_t magicAddr = reinterpret_cast<uintptr_t>(magicPtr);
-
-            // Advance past this hit for the next iteration.
             searchStart = magicAddr + sizeof(uint64_t);
 
-            // Walk backward up to 100 bytes looking for LEA with RIP-relative disp32.
-            // Pattern: 48 8D [modrm where top 2 bits == 00 and low 3 bits == 101] [disp32]
             const uintptr_t scanStart = (magicAddr > 100) ? (magicAddr - 100) : 0;
 
             for (uintptr_t cur = magicAddr >= 7 ? magicAddr - 7 : 0;
@@ -244,65 +238,200 @@ namespace Valorant
                     Platform::IsBadReadPtr(structBase + 0x78 + 3))
                     continue;
 
-                // state[0..6] starts at structBase + 0x40
-                // key (uint32) sits at structBase + 0x78
-                const uintptr_t candidateState = structBase + 0x40;
-                const uintptr_t candidateKey   = structBase + 0x78;
-
-                const uint32_t key = *reinterpret_cast<const uint32_t*>(candidateKey);
-                if (key == 0)
-                    continue;
-
-                uint64_t state[7];
-                std::memcpy(state, reinterpret_cast<const void*>(candidateState), sizeof(state));
-
-                const uint64_t decrypted = DecryptGObjectsPtr(key, state);
-                uint8_t* fuoa = reinterpret_cast<uint8_t*>(decrypted);
-                if (Platform::IsBadReadPtr(fuoa))
-                    continue;
-
-                // Validate the FUObjectArray header (mirrors FindGObjects validation).
-                const int32_t numElems  = *reinterpret_cast<int32_t*>(fuoa + 0x14);
-                const int32_t maxElems  = *reinterpret_cast<int32_t*>(fuoa + 0x10);
-                const int32_t numChunks = *reinterpret_cast<int32_t*>(fuoa + 0x1C);
-                const int32_t maxChunks = *reinterpret_cast<int32_t*>(fuoa + 0x18);
-                void* const   chunks    = *reinterpret_cast<void**>(fuoa + 0x00);
-
-                if (numElems < 0x100 || numElems > maxElems ||
-                    maxElems > 0x4000000 ||
-                    numChunks < 1 || numChunks > maxChunks ||
-                    maxChunks < 1 || maxChunks > 0x800 ||
-                    Platform::IsBadReadPtr(chunks))
-                    continue;
-
-                // Candidate validated — store the RVAs.
-                const uint32_t stateRVA = static_cast<uint32_t>(candidateState - modBase);
-                const uint32_t keyRVA   = static_cast<uint32_t>(candidateKey   - modBase);
-
-                std::cerr << "[Valorant] sig scan: state @ 0x" << std::hex << stateRVA
-                          << ", key @ 0x" << keyRVA << std::dec << "\n";
-
-                // Patch-drift detector: when the runtime-discovered RVAs
-                // differ from the hardcoded values in Decryption.h, surface
-                // it so the source constants get bumped before the scan
-                // ever misses on a future patch.
-                if (stateRVA != kGObjectsStateRVA || keyRVA != kGObjectsKeyRVA)
-                {
-                    std::cerr << "[Valorant] patch drift: sig-scan found state @ 0x"
-                              << std::hex << stateRVA << " key @ 0x" << keyRVA
-                              << " (Decryption.h says state 0x" << kGObjectsStateRVA
-                              << " key 0x" << kGObjectsKeyRVA << std::dec
-                              << ") -- bump Decryption.h.\n";
-                }
-
-                gObjectsStateRVA = stateRVA;
-                gObjectsKeyRVA   = keyRVA;
-                return true;
+                if (validator(structBase))
+                    return static_cast<uint32_t>(structBase - modBase);
             }
         }
 
-        std::cerr << "[Valorant] sig scan failed, falling back to hardcoded RVAs\n";
-        return false;
+        return 0;
+    }
+
+    // -----------------------------------------------------------------------
+    // IsGObjectsCandidate  (GObjects-specific StructValidator)
+    //
+    // Reads state[7] from candidateBase + 0x40 and key from + 0x78,
+    // runs DecryptGObjectsPtrImpl, and validates the resulting pointer as a
+    // plausible FUObjectArray header.
+    // -----------------------------------------------------------------------
+    static bool IsGObjectsCandidate(uintptr_t structBase)
+    {
+        const uintptr_t candidateState = structBase + 0x40;
+        const uintptr_t candidateKey   = structBase + 0x78;
+
+        const uint32_t key = *reinterpret_cast<const uint32_t*>(candidateKey);
+        if (key == 0)
+            return false;
+
+        uint64_t state[7];
+        std::memcpy(state, reinterpret_cast<const void*>(candidateState), sizeof(state));
+
+        const uint64_t decrypted = DecryptGObjectsPtrImpl(key, state);
+        uint8_t* fuoa = reinterpret_cast<uint8_t*>(decrypted);
+        if (Platform::IsBadReadPtr(fuoa))
+            return false;
+
+        const int32_t numElems  = *reinterpret_cast<int32_t*>(fuoa + 0x14);
+        const int32_t maxElems  = *reinterpret_cast<int32_t*>(fuoa + 0x10);
+        const int32_t numChunks = *reinterpret_cast<int32_t*>(fuoa + 0x1C);
+        const int32_t maxChunks = *reinterpret_cast<int32_t*>(fuoa + 0x18);
+        void* const   chunks    = *reinterpret_cast<void**>(fuoa + 0x00);
+
+        if (numElems < 0x100 || numElems > maxElems ||
+            maxElems > 0x4000000 ||
+            numChunks < 1 || numChunks > maxChunks ||
+            maxChunks < 1 || maxChunks > 0x800 ||
+            Platform::IsBadReadPtr(chunks))
+            return false;
+
+        return true;
+    }
+
+    // -----------------------------------------------------------------------
+    // IsFNameMaskCandidate  (FName-mask-specific StructValidator)
+    //
+    // Reads state[7] from candidateBase + 0x40 and key from + 0x78, runs
+    // DecryptFNameMaskPtr, and validates the result is plausible:
+    //   - The decrypted pointer must be readable.
+    //   - It must NOT equal what DecryptGObjectsPtrImpl produces for the same
+    //     data — that distinguishes this struct from the GObjects struct.
+    //   - structBase + 0x7C holds a uint32 counter (must be < 0x10000 to be
+    //     plausible — it's an access counter, not a large integer).
+    //   - structBase + 0x80 holds a lock byte (must be 0 or 1).
+    // -----------------------------------------------------------------------
+    static bool IsFNameMaskCandidate(uintptr_t structBase)
+    {
+        if (Platform::IsBadReadPtr(structBase + 0x80))
+            return false;
+
+        const uintptr_t candidateState = structBase + 0x40;
+        const uintptr_t candidateKey   = structBase + 0x78;
+
+        const uint32_t key = *reinterpret_cast<const uint32_t*>(candidateKey);
+        if (key == 0)
+            return false;
+
+        // Sanity-check lock byte and counter at the well-known offsets.
+        const uint32_t counter   = *reinterpret_cast<const uint32_t*>(structBase + 0x7C);
+        const uint8_t  lockByte  = *reinterpret_cast<const uint8_t* >(structBase + 0x80);
+        if (lockByte > 1 || counter > 0x10000)
+            return false;
+
+        uint64_t state[7];
+        std::memcpy(state, reinterpret_cast<const void*>(candidateState), sizeof(state));
+
+        const uint64_t fnameMaskResult = DecryptFNameMaskPtr(key, state);
+        if (Platform::IsBadReadPtr(reinterpret_cast<void*>(fnameMaskResult)))
+            return false;
+
+        // The FName-mask struct must not decrypt to the same value as the
+        // GObjects struct would — that proves this is a different struct.
+        const uint64_t gobjectsResult = DecryptGObjectsPtrImpl(key, state);
+        if (fnameMaskResult == gobjectsResult)
+            return false;
+
+        return true;
+    }
+
+    // -----------------------------------------------------------------------
+    // LocateGObjectsStruct
+    //
+    // Uses FindEncryptedGlobalsStructRVA with IsGObjectsCandidate to locate
+    // the GObjects encrypted-globals struct and store its state/key RVAs.
+    // Applies the strict-drift check if bStrictDrift is enabled.
+    //
+    // Returns true on success, false if no valid candidate was found (caller
+    // falls back to the hardcoded RVAs).
+    // -----------------------------------------------------------------------
+    static bool LocateGObjectsStruct()
+    {
+        const uintptr_t modBase = Platform::GetModuleBase();
+        if (!modBase)
+            return false;
+
+        const uint32_t structBaseRVA = FindEncryptedGlobalsStructRVA(IsGObjectsCandidate);
+        if (structBaseRVA == 0)
+        {
+            std::cerr << "[Valorant] sig scan failed, falling back to hardcoded RVAs\n";
+            return false;
+        }
+
+        const uint32_t stateRVA = structBaseRVA + 0x40;
+        const uint32_t keyRVA   = structBaseRVA + 0x78;
+
+        std::cerr << "[Valorant] sig scan: state @ 0x" << std::hex << stateRVA
+                  << ", key @ 0x" << keyRVA << std::dec << "\n";
+
+        // Patch-drift detector: when the runtime-discovered RVAs differ from
+        // the hardcoded values in Decryption.h, surface it so the source
+        // constants get bumped before the scan ever misses on a future patch.
+        if (stateRVA != kGObjectsStateRVA || keyRVA != kGObjectsKeyRVA)
+        {
+            if (bStrictDrift)
+            {
+                std::cerr << "[Valorant] STRICT-DRIFT: aborting -- bump Decryption.h "
+                             "fallback values to match "
+                          << "(found state 0x" << std::hex << stateRVA
+                          << " key 0x" << keyRVA
+                          << ", Decryption.h has state 0x" << kGObjectsStateRVA
+                          << " key 0x" << kGObjectsKeyRVA << std::dec << ")\n";
+                std::exit(2);
+            }
+
+            std::cerr << "[Valorant] patch drift: sig-scan found state @ 0x"
+                      << std::hex << stateRVA << " key @ 0x" << keyRVA
+                      << " (Decryption.h says state 0x" << kGObjectsStateRVA
+                      << " key 0x" << kGObjectsKeyRVA << std::dec
+                      << ") -- bump Decryption.h.\n";
+        }
+
+        gObjectsStateRVA = stateRVA;
+        gObjectsKeyRVA   = keyRVA;
+        return true;
+    }
+
+    // -----------------------------------------------------------------------
+    // LocateFNameMaskStruct
+    //
+    // Uses FindEncryptedGlobalsStructRVA with IsFNameMaskCandidate to locate
+    // the FName-mask encrypted-globals struct and store its state/key RVAs in
+    // fNameMaskStateRVA / fNameMaskKeyRVA.
+    //
+    // Returns true on success, false if no valid candidate was found (caller
+    // falls back to the hardcoded kFNameMask* RVAs).
+    // -----------------------------------------------------------------------
+    static bool LocateFNameMaskStruct()
+    {
+        const uintptr_t modBase = Platform::GetModuleBase();
+        if (!modBase)
+            return false;
+
+        const uint32_t structBaseRVA = FindEncryptedGlobalsStructRVA(IsFNameMaskCandidate);
+        if (structBaseRVA == 0)
+        {
+            std::cerr << "[Valorant] FName-mask sig scan failed, "
+                         "falling back to hardcoded RVAs\n";
+            return false;
+        }
+
+        const uint32_t stateRVA = structBaseRVA + 0x40;
+        const uint32_t keyRVA   = structBaseRVA + 0x78;
+
+        std::cerr << "[Valorant] FName-mask sig scan: state @ 0x"
+                  << std::hex << stateRVA
+                  << ", key @ 0x" << keyRVA << std::dec << "\n";
+
+        if (stateRVA != kFNameMaskStateRVA || keyRVA != kFNameMaskKeyRVA)
+        {
+            std::cerr << "[Valorant] FName-mask patch drift: found state 0x"
+                      << std::hex << stateRVA << " key 0x" << keyRVA
+                      << " (Decryption.h has state 0x" << kFNameMaskStateRVA
+                      << " key 0x" << kFNameMaskKeyRVA << std::dec
+                      << ") -- bump Decryption.h.\n";
+        }
+
+        fNameMaskStateRVA = stateRVA;
+        fNameMaskKeyRVA   = keyRVA;
+        return true;
     }
 
     uint8_t* FindGObjects()
@@ -340,7 +469,7 @@ namespace Valorant
             return nullptr;
         }
 
-        const uint64_t decrypted = DecryptGObjectsPtr(key, state);
+        const uint64_t decrypted = DecryptGObjectsPtrImpl(key, state);
         const uint32_t caseIdx   = ComputeCaseIndex(key);
 
         std::cerr << "[Valorant] GObjects: key=0x" << std::hex << key
@@ -387,6 +516,14 @@ namespace Valorant
 
     void Init()
     {
+        // Check env var to enable strict-drift mode for CI pipelines.
+        // Set VALORANT_STRICT_DRIFT=1 in the environment before launching.
+        if (const char* env = std::getenv("VALORANT_STRICT_DRIFT"))
+        {
+            if (env[0] == '1')
+                bStrictDrift = true;
+        }
+
         std::cerr << "[Valorant] Resolving GObjects via encrypted-globals decrypt...\n";
         uint8_t* gobjects = FindGObjects();
         if (!gobjects)
@@ -395,6 +532,9 @@ namespace Valorant
                          "fail downstream.\n";
             return;
         }
+
+        // Locate the FName-mask struct after GObjects is resolved.
+        LocateFNameMaskStruct();
 
         // Hand the absolute address to ObjectArray — bypasses the scanner.
         ObjectArray::InitFromAbsolute(gobjects);

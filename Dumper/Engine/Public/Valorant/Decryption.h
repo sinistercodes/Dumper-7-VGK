@@ -58,6 +58,43 @@ namespace Valorant
     inline uint32_t gObjectsStateRVA = kGObjectsStateRVA;
     inline uint32_t gObjectsKeyRVA   = kGObjectsKeyRVA;
 
+    // Runtime-resolved RVAs for the FName-mask struct (populated by
+    // LocateFNameMaskStruct at startup). Initialized to the hardcoded
+    // fallback values so the decrypt works even when the scan is not called.
+    inline uint32_t fNameMaskStateRVA = kFNameMaskStateRVA;
+    inline uint32_t fNameMaskKeyRVA   = kFNameMaskKeyRVA;
+
+    // -------------------------------------------------------------------------
+    // Strict-drift mode
+    //
+    // When bStrictDrift is true, a mismatch between the runtime sig-scan result
+    // and the hardcoded kGObjects* fallback constants is treated as a hard
+    // failure (std::exit(2)) rather than a warning. This is intended for CI
+    // pipelines where a silent drift would produce a wrong dump.
+    //
+    // How to enable:
+    //   Set the environment variable VALORANT_STRICT_DRIFT=1 before launching
+    //   the dumper, or flip the default to `true` in source for permanent CI
+    //   enforcement. Init() checks the env var automatically.
+    // -------------------------------------------------------------------------
+    inline bool bStrictDrift = false;
+
+    // -------------------------------------------------------------------------
+    // Generic encrypted-globals struct locator framework
+    //
+    // Validator callback: receives the absolute address of a candidate struct
+    // base and returns true iff the candidate is the encrypted-globals struct
+    // for the caller's target. The framework hands every plausible candidate
+    // (kMagic hit → LEA decode) to the validator; the first accepted wins.
+    // -------------------------------------------------------------------------
+    using StructValidator = bool(*)(uintptr_t structBase);
+
+    // Scans for kMagic occurrences, walks back to the RIP-relative LEA,
+    // decodes the struct base, and hands each candidate to `validator`.
+    // Returns the first accepted struct base as an RVA (relative to module
+    // base), or 0 on failure.
+    uint32_t FindEncryptedGlobalsStructRVA(StructValidator validator);
+
     // Returns the live FUObjectArray header address (absolute pointer in the
     // game's heap). Returns nullptr on failure with diagnostic to stderr.
     uint8_t* FindGObjects();
@@ -72,4 +109,9 @@ namespace Valorant
     // qword that the game uses as the FName mask pointer. Exported for tests
     // and for the orchestrator to embed in the emitted ValorantDecrypt.h.
     uint64_t DecryptFNameMask(uint32_t key, const uint64_t state[7]);
+
+    // Public wrapper around the GObjects read-path cipher (sub_EA1980 /
+    // sub_3638AC0). Given the live (key, state[7]) snapshot, returns the
+    // decrypted FUObjectArray pointer. Exported for self-tests.
+    uint64_t DecryptGObjectsPtr(uint32_t key, const uint64_t state[7]);
 }
