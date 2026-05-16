@@ -50,6 +50,10 @@ public:
     static void InitEngineCore();
     static void InitInternal();
 
+    // Path of the per-dump folder (e.g. <SDKGenerationPath>/<Version>-<Game>).
+    // Empty until the first Generator::Generate<> call runs SetupDumperFolder.
+    static const fs::path& GetDumperFolder() { return DumperFolder; }
+
 private:
     static bool SetupDumperFolder();
 

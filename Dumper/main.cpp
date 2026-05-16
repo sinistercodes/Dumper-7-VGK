@@ -10,6 +10,8 @@
 
 #include "Generators/Generator.h"
 
+#include "Valorant/Output.h"
+
 enum class EFortToastType : uint8
 {
         Default                        = 0,
@@ -61,6 +63,9 @@ DWORD MainThread(HMODULE Module)
 	Generator::Generate<MappingGenerator>();
 	Generator::Generate<IDAMappingGenerator>();
 	Generator::Generate<DumpspaceGenerator>();
+
+	// Emit Valorant-specific runtime helper header alongside the SDK.
+	Valorant::WriteDecryptHeader(Generator::GetDumperFolder());
 
 	auto DumpFinishTime = std::chrono::high_resolution_clock::now();
 
