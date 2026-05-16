@@ -48,9 +48,9 @@ namespace Valorant
     inline constexpr uint32_t kGObjectsStateRVA = 0xA62E600;
     inline constexpr uint32_t kGObjectsKeyRVA   = 0xA62E638;
 
-    // FName-mask cipher anchors (sub_9DAF50). State is 7 qwords, key is u32.
-    inline constexpr uint32_t kFNameMaskStateRVA = 0xA7C0A40;
-    inline constexpr uint32_t kFNameMaskKeyRVA   = 0xA7C0A78;
+    // GEngine encrypted slot cipher anchors (sub_9DAF50). State is 7 qwords, key is u32.
+    inline constexpr uint32_t kGEngineStateRVA = 0xA7C0A40;
+    inline constexpr uint32_t kGEngineKeyRVA   = 0xA7C0A78;
 
     // Runtime-resolved RVAs (populated by LocateGObjectsStruct at startup).
     // Initialized to the hardcoded fallback values so FindGObjects() works
@@ -58,11 +58,11 @@ namespace Valorant
     inline uint32_t gObjectsStateRVA = kGObjectsStateRVA;
     inline uint32_t gObjectsKeyRVA   = kGObjectsKeyRVA;
 
-    // Runtime-resolved RVAs for the FName-mask struct (populated by
-    // LocateFNameMaskStruct at startup). Initialized to the hardcoded
+    // Runtime-resolved RVAs for the GEngine encrypted slot struct (populated by
+    // LocateGEngineStruct at startup). Initialized to the hardcoded
     // fallback values so the decrypt works even when the scan is not called.
-    inline uint32_t fNameMaskStateRVA = kFNameMaskStateRVA;
-    inline uint32_t fNameMaskKeyRVA   = kFNameMaskKeyRVA;
+    inline uint32_t gEngineStateRVA = kGEngineStateRVA;
+    inline uint32_t gEngineKeyRVA   = kGEngineKeyRVA;
 
     // -------------------------------------------------------------------------
     // Strict-drift mode
@@ -104,11 +104,12 @@ namespace Valorant
     // Generator::InitEngineCore().
     void Init();
 
-    // Public wrapper around the FName-mask read-path cipher (sub_9DAF50 read
-    // block). Given the live (key, state[7]) snapshot, returns the decrypted
-    // qword that the game uses as the FName mask pointer. Exported for tests
-    // and for the orchestrator to embed in the emitted ValorantDecrypt.h.
-    uint64_t DecryptFNameMask(uint32_t key, const uint64_t state[7]);
+    // Public wrapper around the GEngine encrypted-slot read-path cipher
+    // (sub_9DAF50 read block). Given the live (key, state[7]) snapshot,
+    // returns the decrypted UEngine* (the global GEngine pointer). 180+ sites
+    // in the binary inline the same cipher to dereference GEngine. Exported
+    // for tests and for the orchestrator to embed in ValorantDecrypt.h.
+    uint64_t DecryptGEngine(uint32_t key, const uint64_t state[7]);
 
     // Public wrapper around the GObjects read-path cipher (sub_EA1980 /
     // sub_3638AC0). Given the live (key, state[7]) snapshot, returns the

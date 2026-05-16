@@ -33,7 +33,7 @@ namespace Valorant
             uint32_t key;
             uint64_t state[7];
             uint64_t expectedGObjects;
-            uint64_t expectedFNameMask;
+            uint64_t expectedGEngine;
         };
 
         // Shared deterministic state — varied non-zero values, one per slot.
@@ -53,7 +53,7 @@ namespace Valorant
               { kTestState[0], kTestState[1], kTestState[2], kTestState[3], kTestState[4], kTestState[5], kTestState[6] },
               0xFEDCBA98D908E7D3ULL, 0x01234566DA4EF82DULL },
             // case 1: v = uint32(hi+idx) + ROL(state, ((hi+2*idx)%63)+1)
-            // FNameMask expected re-captured after the width-of-NOT fix in
+            // GEngine expected re-captured after the width-of-NOT fix in
             // commit 77ecadf -- pre-fix value was 0xF02138A95F38E936ULL, which
             // differed in the upper 32 bits because ~ ran at uint64 width.
             { 1, 0x00000003U,
@@ -93,7 +93,7 @@ namespace Valorant
             const DecryptFixture& f = kFixtures[i];
 
             const uint64_t gotGObjects  = Valorant::DecryptGObjectsPtr(f.key, f.state);
-            const uint64_t gotFNameMask = Valorant::DecryptFNameMask(f.key, f.state);
+            const uint64_t gotGEngine = Valorant::DecryptGEngine(f.key, f.state);
 
             bool ok = true;
 
@@ -108,12 +108,12 @@ namespace Valorant
                 ++failed;
             }
 
-            if (gotFNameMask != f.expectedFNameMask)
+            if (gotGEngine != f.expectedGEngine)
             {
                 std::cerr << "[Valorant][TEST FAIL] case=" << f.caseIdx
-                          << " kind=FNameMask"
-                          << " got=0x"      << std::hex << gotFNameMask
-                          << " expected=0x" << f.expectedFNameMask
+                          << " kind=GEngine"
+                          << " got=0x"      << std::hex << gotGEngine
+                          << " expected=0x" << f.expectedGEngine
                           << std::dec << "\n";
                 ok = false;
                 ++failed;

@@ -87,7 +87,7 @@ namespace Valorant
         return v ^ static_cast<uint64_t>(key);
     }
 
-    // ---------- the FName-mask decrypt variant ----------
+    // ---------- the GEngine encrypted slot decrypt variant ----------
     // Direct port of the read-path case statements in sub_9DAF50 (the block
     // after the init loop that reads state[idx], applies per-case math, and
     // returns `v ^ key`). The selector is `(MAGIC * mixedKey) % 7` using the
@@ -102,7 +102,7 @@ namespace Valorant
     //   5: v = ROL(ROL(state, ((hi+2*idx) % 63)+1), ((hi+idx) % 63)+1)
     //   6: v = bitrev64(ROR(state, ((hi+2*idx) % 63)+1))
     //   final: result = v XOR uint32(key)
-    static uint64_t DecryptFNameMaskPtr(uint32_t key, const uint64_t state[7])
+    static uint64_t DecryptGEnginePtr(uint32_t key, const uint64_t state[7])
     {
         const uint32_t mix  = key ^ (((key ^ (key >> 15)) >> 12)) ^ (key << 25);
         const uint64_t hash = kMagic * static_cast<uint64_t>(mix);
@@ -151,9 +151,9 @@ namespace Valorant
         return v ^ static_cast<uint64_t>(key);
     }
 
-    uint64_t DecryptFNameMask(uint32_t key, const uint64_t state[7])
+    uint64_t DecryptGEngine(uint32_t key, const uint64_t state[7])
     {
-        return DecryptFNameMaskPtr(key, state);
+        return DecryptGEnginePtr(key, state);
     }
 
     uint64_t DecryptGObjectsPtr(uint32_t key, const uint64_t state[7])
@@ -287,10 +287,10 @@ namespace Valorant
     }
 
     // -----------------------------------------------------------------------
-    // IsFNameMaskCandidate  (FName-mask-specific StructValidator)
+    // IsGEngineCandidate  (GEngine encrypted slot-specific StructValidator)
     //
     // Reads state[7] from candidateBase + 0x40 and key from + 0x78, runs
-    // DecryptFNameMaskPtr, and validates the result is plausible:
+    // DecryptGEnginePtr, and validates the result is plausible:
     //   - The decrypted pointer must be readable.
     //   - It must NOT equal what DecryptGObjectsPtrImpl produces for the same
     //     data — that distinguishes this struct from the GObjects struct.
@@ -298,7 +298,7 @@ namespace Valorant
     //     plausible — it's an access counter, not a large integer).
     //   - structBase + 0x80 holds a lock byte (must be 0 or 1).
     // -----------------------------------------------------------------------
-    static bool IsFNameMaskCandidate(uintptr_t structBase)
+    static bool IsGEngineCandidate(uintptr_t structBase)
     {
         if (Platform::IsBadReadPtr(structBase + 0x80))
             return false;
@@ -319,14 +319,14 @@ namespace Valorant
         uint64_t state[7];
         std::memcpy(state, reinterpret_cast<const void*>(candidateState), sizeof(state));
 
-        const uint64_t fnameMaskResult = DecryptFNameMaskPtr(key, state);
-        if (Platform::IsBadReadPtr(reinterpret_cast<void*>(fnameMaskResult)))
+        const uint64_t gengineResult = DecryptGEnginePtr(key, state);
+        if (Platform::IsBadReadPtr(reinterpret_cast<void*>(gengineResult)))
             return false;
 
-        // The FName-mask struct must not decrypt to the same value as the
+        // The GEngine encrypted slot struct must not decrypt to the same value as the
         // GObjects struct would — that proves this is a different struct.
         const uint64_t gobjectsResult = DecryptGObjectsPtrImpl(key, state);
-        if (fnameMaskResult == gobjectsResult)
+        if (gengineResult == gobjectsResult)
             return false;
 
         return true;
@@ -390,25 +390,25 @@ namespace Valorant
     }
 
     // -----------------------------------------------------------------------
-    // LocateFNameMaskStruct
+    // LocateGEngineStruct
     //
-    // Uses FindEncryptedGlobalsStructRVA with IsFNameMaskCandidate to locate
-    // the FName-mask encrypted-globals struct and store its state/key RVAs in
-    // fNameMaskStateRVA / fNameMaskKeyRVA.
+    // Uses FindEncryptedGlobalsStructRVA with IsGEngineCandidate to locate
+    // the GEngine encrypted slot encrypted-globals struct and store its state/key RVAs in
+    // gEngineStateRVA / gEngineKeyRVA.
     //
     // Returns true on success, false if no valid candidate was found (caller
-    // falls back to the hardcoded kFNameMask* RVAs).
+    // falls back to the hardcoded kGEngine* RVAs).
     // -----------------------------------------------------------------------
-    static bool LocateFNameMaskStruct()
+    static bool LocateGEngineStruct()
     {
         const uintptr_t modBase = Platform::GetModuleBase();
         if (!modBase)
             return false;
 
-        const uint32_t structBaseRVA = FindEncryptedGlobalsStructRVA(IsFNameMaskCandidate);
+        const uint32_t structBaseRVA = FindEncryptedGlobalsStructRVA(IsGEngineCandidate);
         if (structBaseRVA == 0)
         {
-            std::cerr << "[Valorant] FName-mask sig scan failed, "
+            std::cerr << "[Valorant] GEngine encrypted slot sig scan failed, "
                          "falling back to hardcoded RVAs\n";
             return false;
         }
@@ -416,21 +416,21 @@ namespace Valorant
         const uint32_t stateRVA = structBaseRVA + 0x40;
         const uint32_t keyRVA   = structBaseRVA + 0x78;
 
-        std::cerr << "[Valorant] FName-mask sig scan: state @ 0x"
+        std::cerr << "[Valorant] GEngine encrypted slot sig scan: state @ 0x"
                   << std::hex << stateRVA
                   << ", key @ 0x" << keyRVA << std::dec << "\n";
 
-        if (stateRVA != kFNameMaskStateRVA || keyRVA != kFNameMaskKeyRVA)
+        if (stateRVA != kGEngineStateRVA || keyRVA != kGEngineKeyRVA)
         {
-            std::cerr << "[Valorant] FName-mask patch drift: found state 0x"
+            std::cerr << "[Valorant] GEngine encrypted slot patch drift: found state 0x"
                       << std::hex << stateRVA << " key 0x" << keyRVA
-                      << " (Decryption.h has state 0x" << kFNameMaskStateRVA
-                      << " key 0x" << kFNameMaskKeyRVA << std::dec
+                      << " (Decryption.h has state 0x" << kGEngineStateRVA
+                      << " key 0x" << kGEngineKeyRVA << std::dec
                       << ") -- bump Decryption.h.\n";
         }
 
-        fNameMaskStateRVA = stateRVA;
-        fNameMaskKeyRVA   = keyRVA;
+        gEngineStateRVA = stateRVA;
+        gEngineKeyRVA   = keyRVA;
         return true;
     }
 
@@ -545,8 +545,8 @@ namespace Valorant
             return;
         }
 
-        // Locate the FName-mask struct after GObjects is resolved.
-        LocateFNameMaskStruct();
+        // Locate the GEngine encrypted slot struct after GObjects is resolved.
+        LocateGEngineStruct();
 
         // Hand the absolute address to ObjectArray — bypasses the scanner.
         ObjectArray::InitFromAbsolute(gobjects);

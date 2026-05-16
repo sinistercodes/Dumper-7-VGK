@@ -158,34 +158,34 @@ namespace Valorant
         out << "constexpr int32_t  ProcessEventIndex = " << std::dec
             << Off::InSDK::ProcessEvent::PEIndex << ";\n\n";
 
-        out << "// FName decrypt: this binary actually ships TWO ciphers.\n";
-        out << "//   1. A simple per-byte XOR with a 32-bit key recovered from the \"None\"\n";
-        out << "//      entry's known plaintext. This is what most consumers use; see\n";
-        out << "//      recover_fname_key() / fname_decrypt_bytes() below.\n";
-        out << "//   2. A 7-state mask cipher implemented at sub_9DAF50, operating on a\n";
-        out << "//      separate state struct. The RVAs are emitted below so consumers\n";
-        out << "//      that need the mask cipher have an anchor; port the case math\n";
-        out << "//      from sub_9DAF50 if your consumer actually needs the mask path.\n";
-        const bool fnameMaskDrift =
-            Valorant::fNameMaskStateRVA != Valorant::kFNameMaskStateRVA ||
-            Valorant::fNameMaskKeyRVA   != Valorant::kFNameMaskKeyRVA;
-        const char* fnameMaskSource = fnameMaskDrift ? "sigscan" : "hardcoded";
-        out << "/// RVA of the 7-qword FName mask cipher state array.\n";
-        if (fnameMaskDrift)
-            out << "/// source=sigscan  fallback=0x" << std::hex << Valorant::kFNameMaskStateRVA
+        out << "// Encrypted globals: Valorant deploys N parallel encrypted-slot ciphers,\n";
+        out << "// one per protected global pointer. They share the same 7-state algorithm\n";
+        out << "// (MAGIC 0x2545F4914F6CDD1D) but each owns an independent state struct.\n";
+        out << "// Two are surfaced here:\n";
+        out << "//   1. GObjects -- FUObjectArray* (cipher sub_EA1980 / sub_3638AC0)\n";
+        out << "//   2. GEngine  -- UEngine*       (cipher sub_9DAF50, 180+ inlined readers)\n";
+        out << "// FName decrypt is a SEPARATE path: simple per-byte XOR with a key recovered\n";
+        out << "// from the FNamePool's first entry. See recover_fname_key() below.\n";
+        const bool gengineDrift =
+            Valorant::gEngineStateRVA != Valorant::kGEngineStateRVA ||
+            Valorant::gEngineKeyRVA   != Valorant::kGEngineKeyRVA;
+        const char* gengineSource = gengineDrift ? "sigscan" : "hardcoded";
+        out << "/// RVA of the 7-qword GEngine encrypted slot cipher state array.\n";
+        if (gengineDrift)
+            out << "/// source=sigscan  fallback=0x" << std::hex << Valorant::kGEngineStateRVA
                 << std::dec << "  DRIFT (bump Decryption.h fallback)\n";
         else
-            EmitSourceLine(out, fnameMaskSource);
-        out << "constexpr uint32_t FNameMaskState    = 0x" << std::hex
-            << Valorant::fNameMaskStateRVA << std::dec << ";\n";
-        out << "/// RVA of the uint32 FName mask cipher key (= FNameMaskState + 0x38).\n";
-        if (fnameMaskDrift)
-            out << "/// source=sigscan  fallback=0x" << std::hex << Valorant::kFNameMaskKeyRVA
+            EmitSourceLine(out, gengineSource);
+        out << "constexpr uint32_t GEngineState    = 0x" << std::hex
+            << Valorant::gEngineStateRVA << std::dec << ";\n";
+        out << "/// RVA of the uint32 GEngine encrypted slot cipher key (= GEngineState + 0x38).\n";
+        if (gengineDrift)
+            out << "/// source=sigscan  fallback=0x" << std::hex << Valorant::kGEngineKeyRVA
                 << std::dec << "  DRIFT (bump Decryption.h fallback)\n";
         else
-            EmitSourceLine(out, fnameMaskSource);
-        out << "constexpr uint32_t FNameMaskKey      = 0x" << std::hex
-            << Valorant::fNameMaskKeyRVA << std::dec << ";\n\n";
+            EmitSourceLine(out, gengineSource);
+        out << "constexpr uint32_t GEngineKey      = 0x" << std::hex
+            << Valorant::gEngineKeyRVA << std::dec << ";\n\n";
 
         // ------------------------------------------------------------------ //
         // Function Pointers
@@ -363,21 +363,22 @@ namespace Valorant
         out << "}\n\n";
 
         // ------------------------------------------------------------------ //
-        // FName Mask Cipher (sub_9DAF50)
+        // GEngine Encrypted Slot Cipher (sub_9DAF50)
         // ------------------------------------------------------------------ //
-        out << "// ============== FName Mask Cipher (sub_9DAF50) ==============\n\n";
-        out << "// Optional secondary cipher. The simple per-byte XOR path above is what\n";
-        out << "// resolves FNames in the current patch; this mask cipher is exposed for\n";
-        out << "// consumers that need to mirror sub_9DAF50's output (e.g. if a future\n";
-        out << "// patch wires it into the FName resolution path).\n\n";
+        out << "// ============== GEngine Encrypted Slot Cipher (sub_9DAF50) ==============\n\n";
+        out << "// Decrypts the global UEngine* pointer (Valorant's GEngine slot).\n";
+        out << "// 180+ sites in the game binary inline this exact 7-state cipher to\n";
+        out << "// dereference GEngine; the algorithm is identical to the GObjects cipher\n";
+        out << "// above but reads from a parallel state struct. Useful for any consumer\n";
+        out << "// that needs world/viewport access without scanning the heap.\n\n";
 
-        out << "/// Reads FNameMaskState[7] + FNameMaskKey from the live module and returns\n";
+        out << "/// Reads GEngineState[7] + GEngineKey from the live module and returns\n";
         out << "/// the decrypted mask qword (ported from sub_9DAF50, read path).\n";
-        out << "__forceinline uint64_t fname_decrypt_mask(uintptr_t module_base)\n";
+        out << "__forceinline uint64_t decrypt_gengine(uintptr_t module_base)\n";
         out << "{\n";
         out << "    constexpr uint64_t kMagic = 0x2545F4914F6CDD1DULL;\n";
-        out << "    const uint64_t* statePtr = reinterpret_cast<const uint64_t*>(module_base + FNameMaskState);\n";
-        out << "    const uint32_t  key      = *reinterpret_cast<const uint32_t*>(module_base + FNameMaskKey);\n";
+        out << "    const uint64_t* statePtr = reinterpret_cast<const uint64_t*>(module_base + GEngineState);\n";
+        out << "    const uint32_t  key      = *reinterpret_cast<const uint32_t*>(module_base + GEngineKey);\n";
         out << "    uint64_t state[7];\n";
         out << "    for (int i = 0; i < 7; ++i) state[i] = statePtr[i];\n\n";
         out << "    const uint32_t mix  = key ^ (((key ^ (key >> 15)) >> 12)) ^ (key << 25);\n";
@@ -595,11 +596,11 @@ namespace Valorant
                 "sigscan", "high",
                 HexRva(Valorant::kGObjectsKeyRVA),
                 gObjectsKeyDrift);
-            gp["FNameMaskState"] = MakeGlobalPtr(
-                HexRva(Valorant::fNameMaskStateRVA),
+            gp["GEngineState"] = MakeGlobalPtr(
+                HexRva(Valorant::gEngineStateRVA),
                 "hardcoded", "medium");
-            gp["FNameMaskKey"] = MakeGlobalPtr(
-                HexRva(Valorant::fNameMaskKeyRVA),
+            gp["GEngineKey"] = MakeGlobalPtr(
+                HexRva(Valorant::gEngineKeyRVA),
                 "hardcoded", "medium");
 
             json peIdx;
