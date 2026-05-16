@@ -86,6 +86,73 @@ namespace Valorant
         return v ^ static_cast<uint64_t>(key);
     }
 
+    // ---------- the FName-mask decrypt variant ----------
+    // Direct port of the read-path case statements in sub_9DAF50 (the block
+    // after the init loop that reads state[idx], applies per-case math, and
+    // returns `v ^ key`). The selector is `(MAGIC * mixedKey) % 7` using the
+    // full 64-bit product — identical to DecryptGObjectsPtr. The per-case
+    // math differs: cipher cases observed in the read block are:
+    //
+    //   0: v = ~(state + uint32(hi - 1))           (== ~state - (hi-1))
+    //   1: v = stage1(state XOR ~uint32(hi + 2*idx))
+    //   2: v = ~stage1(state)
+    //   3: v = stage1(state + uint32(hi + 2*idx))
+    //   4: v = bitrev64(stage1(state))             (extra stage1 before bitrev)
+    //   5: v = ROL(ROL(state, ((hi+2*idx) % 63)+1), ((hi+idx) % 63)+1)
+    //   6: v = bitrev64(ROR(state, ((hi+2*idx) % 63)+1))
+    //   final: result = v XOR uint32(key)
+    static uint64_t DecryptFNameMaskPtr(uint32_t key, const uint64_t state[7])
+    {
+        const uint32_t mix  = key ^ (((key ^ (key >> 15)) >> 12)) ^ (key << 25);
+        const uint64_t hash = kMagic * static_cast<uint64_t>(mix);
+        const uint32_t hi   = static_cast<uint32_t>(hash >> 32);
+        const uint32_t idx  = static_cast<uint32_t>(hash % 7ULL);
+
+        uint64_t v = state[idx];
+
+        switch (idx)
+        {
+        case 0:
+            v = ~(v + static_cast<uint64_t>(static_cast<uint32_t>(hi - 1)));
+            break;
+        case 1:
+        {
+            const uint64_t mask = ~static_cast<uint64_t>(static_cast<uint32_t>(hi + 2 * idx));
+            v = Stage1(v ^ mask);
+            break;
+        }
+        case 2:
+            v = ~Stage1(v);
+            break;
+        case 3:
+            v = Stage1(v + static_cast<uint64_t>(static_cast<uint32_t>(hi + 2 * idx)));
+            break;
+        case 4:
+            v = Bitrev64(Stage1(v));
+            break;
+        case 5:
+        {
+            const uint32_t amt1 = ((hi + 2 * idx) % 63) + 1;
+            const uint32_t amt2 = ((hi + idx)     % 63) + 1;
+            v = Rol64(Rol64(v, amt1), amt2);
+            break;
+        }
+        case 6:
+        {
+            const uint32_t amt = ((hi + 2 * idx) % 63) + 1;
+            v = Bitrev64(Ror64(v, amt));
+            break;
+        }
+        }
+
+        return v ^ static_cast<uint64_t>(key);
+    }
+
+    uint64_t DecryptFNameMask(uint32_t key, const uint64_t state[7])
+    {
+        return DecryptFNameMaskPtr(key, state);
+    }
+
     // Helper to recompute the case selector for logging — mirrors the same
     // math as DecryptGObjectsPtr so the printed case matches the path taken.
     static uint32_t ComputeCaseIndex(uint32_t key)
@@ -212,6 +279,19 @@ namespace Valorant
 
                 std::cerr << "[Valorant] sig scan: state @ 0x" << std::hex << stateRVA
                           << ", key @ 0x" << keyRVA << std::dec << "\n";
+
+                // Patch-drift detector: when the runtime-discovered RVAs
+                // differ from the hardcoded values in Decryption.h, surface
+                // it so the source constants get bumped before the scan
+                // ever misses on a future patch.
+                if (stateRVA != kGObjectsStateRVA || keyRVA != kGObjectsKeyRVA)
+                {
+                    std::cerr << "[Valorant] patch drift: sig-scan found state @ 0x"
+                              << std::hex << stateRVA << " key @ 0x" << keyRVA
+                              << " (Decryption.h says state 0x" << kGObjectsStateRVA
+                              << " key 0x" << kGObjectsKeyRVA << std::dec
+                              << ") -- bump Decryption.h.\n";
+                }
 
                 gObjectsStateRVA = stateRVA;
                 gObjectsKeyRVA   = keyRVA;

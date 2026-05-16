@@ -48,6 +48,10 @@ namespace Valorant
     inline constexpr uint32_t kGObjectsStateRVA = 0xA62E600;
     inline constexpr uint32_t kGObjectsKeyRVA   = 0xA62E638;
 
+    // FName-mask cipher anchors (sub_9DAF50). State is 7 qwords, key is u32.
+    inline constexpr uint32_t kFNameMaskStateRVA = 0xA7C0A40;
+    inline constexpr uint32_t kFNameMaskKeyRVA   = 0xA7C0A78;
+
     // Runtime-resolved RVAs (populated by LocateGObjectsStruct at startup).
     // Initialized to the hardcoded fallback values so FindGObjects() works
     // even when the scan is not called.
@@ -62,4 +66,10 @@ namespace Valorant
     // ObjectArray::InitFromAbsolute. Call instead of ObjectArray::Init() from
     // Generator::InitEngineCore().
     void Init();
+
+    // Public wrapper around the FName-mask read-path cipher (sub_9DAF50 read
+    // block). Given the live (key, state[7]) snapshot, returns the decrypted
+    // qword that the game uses as the FName mask pointer. Exported for tests
+    // and for the orchestrator to embed in the emitted ValorantDecrypt.h.
+    uint64_t DecryptFNameMask(uint32_t key, const uint64_t state[7]);
 }
