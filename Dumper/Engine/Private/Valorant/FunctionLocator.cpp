@@ -77,12 +77,25 @@ namespace Valorant
 
     void LocateGameFunctions()
     {
-        GameFunctions::SetOutlineMode     = ResolveUFunction("SetOutlineMode",          "GetAresOutlineMode",            GameFunctions::SetOutlineModeFullName);
-        GameFunctions::PlayFinisher       = ResolveUFunction("PlayFinisher",            "OnFinisherTriggered",           GameFunctions::PlayFinisherFullName);
-        GameFunctions::GetSpreadValues    = ResolveUFunction("GetSpreadValues",         nullptr,                         GameFunctions::GetSpreadValuesFullName);
-        GameFunctions::GetSpreadAngles    = ResolveUFunction("GetSpreadAngles",         nullptr,                         GameFunctions::GetSpreadAnglesFullName);
-        GameFunctions::GetFiringLocAndDir = ResolveUFunction("GetFiringLocAndDir",      "GetFiringLocationAndDirection", GameFunctions::GetFiringLocAndDirFullName);
-        GameFunctions::ToVectorNormalize  = ResolveUFunction("ToVectorNormalize",       nullptr,                         GameFunctions::ToVectorNormalizeFullName);
-        GameFunctions::ToAngleNormalize   = ResolveUFunction("ToAngleNormalize",        nullptr,                         GameFunctions::ToAngleNormalizeFullName);
+        GameFunctions::SetOutlineMode     = ResolveUFunction("SetOutlineMode",          "GetAresOutlineMode",                       GameFunctions::SetOutlineModeFullName);
+
+        // PlayFinisher: bare short name isn't registered as a UFunction in
+        // this build. The real server-side handler is AuthOnFinisherTriggered;
+        // OnFinisherTriggered__DelegateSignature is the multicast delegate.
+        GameFunctions::PlayFinisher       = ResolveUFunction("AuthOnFinisherTriggered", "OnFinisherTriggered__DelegateSignature",   GameFunctions::PlayFinisherFullName);
+
+        // GetSpread{Values,Angles}: not present as UFunctions in this build --
+        // the spread math is inlined into GetFiringLocationAndDirection.
+        // Consumers that need spread should hook that function instead.
+        GameFunctions::GetSpreadValues    = ResolveUFunction("GetSpreadValues",         nullptr,                                    GameFunctions::GetSpreadValuesFullName);
+        GameFunctions::GetSpreadAngles    = ResolveUFunction("GetSpreadAngles",         nullptr,                                    GameFunctions::GetSpreadAnglesFullName);
+
+        GameFunctions::GetFiringLocAndDir = ResolveUFunction("GetFiringLocAndDir",      "GetFiringLocationAndDirection",            GameFunctions::GetFiringLocAndDirFullName);
+
+        // To{Vector,Angle}Normalize: not UFunction-registered. The BP-callable
+        // equivalents from UKismetMathLibrary are Vector_Normalize and
+        // NormalizeAxis (Quat_Normalize is a quaternion-specific alt).
+        GameFunctions::ToVectorNormalize  = ResolveUFunction("Vector_Normalize",        nullptr,                                    GameFunctions::ToVectorNormalizeFullName);
+        GameFunctions::ToAngleNormalize   = ResolveUFunction("NormalizeAxis",           "Quat_Normalize",                           GameFunctions::ToAngleNormalizeFullName);
     }
 }
